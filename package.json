@@ -1,0 +1,24 @@
+{
+  "name": "lab-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pipeline lab: end-to-end test suite that gates the release",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc",
+    "test:unit": "node --test \"unit/*.test.ts\"",
+    "list": "playwright test --list",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.12.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1"
+  }
+}

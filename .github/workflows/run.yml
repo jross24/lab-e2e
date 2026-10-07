@@ -1,0 +1,141 @@
+name: run
+
+# Runs the end-to-end suite against one environment.
+#
+# Three triggers use it:
+# - workflow_call: a release in another repository calls it after the deployment to Test.
+#   The caller must give these permissions: contents: read, id-token: write.
+#   The caller must pass its secrets with "secrets: inherit". The README gives the reason.
+# - workflow_dispatch: a person runs it by hand.
+# - schedule: it runs every night against Test.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub environment to test. One of test, staging, production.
+        type: string
+        required: false
+        default: test
+    outputs:
+      web-version:
+        description: The version of web that the run tested.
+        value: ${{ jobs.suite.outputs.web-version }}
+      catalogue-version:
+        description: The version of catalogue that the run tested.
+        value: ${{ jobs.suite.outputs.catalogue-version }}
+      account-version:
+        description: The version of account that the run tested.
+        value: ${{ jobs.suite.outputs.account-version }}
+      core-version:
+        description: The version of core that the run tested, as the two public APIs report it.
+        value: ${{ jobs.suite.outputs.core-version }}
+      commit:
+        description: The commit of lab-e2e that the run used.
+        value: ${{ jobs.suite.outputs.commit }}
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: The GitHub environment to test
+        type: choice
+        options: [test, staging, production]
+        default: test
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions: {}
+
+jobs:
+  # A job that names an environment that does not exist creates it. So this job checks the name first.
+  # A scheduled run has no input, so it tests Test.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.inputs.outputs.environment }}
+    steps:
+      - id: inputs
+        env:
+          ENVIRONMENT: ${{ inputs.environment || 'test' }}
+        run: |
+          case "$ENVIRONMENT" in
+            test | staging | production) ;;
+            *)
+              echo "::error::environment must be test, staging or production."
+              exit 1
+              ;;
+          esac
+          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+  suite:
+    needs: [check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    # The environment decides the AWS account. The secret AWS_ACCOUNT_ID is the secret of this environment
+    # in the repository that started the run. The README explains this for a call from another repository.
+    environment: ${{ needs.check.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      web-version: ${{ steps.versions.outputs.web }}
+      catalogue-version: ${{ steps.versions.outputs.catalogue }}
+      account-version: ${{ steps.versions.outputs.account }}
+      core-version: ${{ steps.versions.outputs.core }}
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      # In a called workflow, the default checkout is the caller repository. So this step names the repository.
+      # A run of this repository tests its own commit. A call from another repository tests main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: jross24/lab-e2e
+          ref: ${{ github.repository == 'jross24/lab-e2e' && github.sha || 'main' }}
+          persist-credentials: false
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      # The tests never call AWS. This step is the only AWS call of the run.
+      - name: read the URL of each application from SSM
+        run: |
+          for pair in web:WEB_URL catalogue:CATALOGUE_URL account:ACCOUNT_URL; do
+            name="${pair%%:*}"
+            variable="${pair##*:}"
+            if ! value="$(aws ssm get-parameter --name "/lab/${name}/url" --query Parameter.Value --output text)"; then
+              echo "::error::Cannot read the SSM parameter /lab/${name}/url. Does github-deploy have ssm:GetParameter (lab-platform)? Is ${name} deployed in this account?"
+              exit 1
+            fi
+            if [[ ! "$value" =~ ^https:// ]]; then
+              echo "::error::The SSM parameter /lab/${name}/url is not an https URL."
+              exit 1
+            fi
+            echo "${variable}=${value}" >> "$GITHUB_ENV"
+          done
+      - run: npx playwright install --with-deps chromium
+      - name: run the suite
+        env:
+          E2E_ENVIRONMENT: ${{ needs.check.outputs.environment }}
+          E2E_COMMIT: ${{ steps.commit.outputs.sha }}
+        run: npx playwright test
+      # The reporter writes the versions that the consistency test observed. A failed run can have them too.
+      - id: versions
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ -f .e2e/versions.json ]]; then
+            jq -r 'to_entries[] | "\(.key)=\(.value)"' .e2e/versions.json >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
