@@ -134,7 +134,8 @@ It shows:
 - the number of tests that passed, failed, were flaky and were skipped,
 - the warm-up tries and the tests that used a retry.
 
-The versions come from the consistency test. It attaches them to its result before it compares them, so a failed run has them too.
+The versions come from the consistency test. It attaches them to its result before it compares them, so a run with a failed comparison has them too. This was checked on a laptop with a changed expectation.
+The lab has not checked whether a failed run gives its outputs (`web-version` and the others) to the calling workflow. The GitHub documentation does not say. The release workflow writes "not recorded" for an empty output.
 
 If the run fails, the workflow uploads the Playwright HTML report and the traces as the artefact `playwright-report`. It keeps them for 7 days.
 This repository is public, so everyone can download the artefact. The report holds only URLs and mock data.

@@ -123,7 +123,9 @@ jobs:
           E2E_ENVIRONMENT: ${{ needs.check.outputs.environment }}
           E2E_COMMIT: ${{ steps.commit.outputs.sha }}
         run: npx playwright test
-      # The reporter writes the versions that the consistency test observed. A failed run can have them too.
+      # The reporter writes the versions that the consistency test observed. A failed comparison still has them
+      # (checked on a laptop). Whether a failed run gives these outputs to the caller is not verified:
+      # the GitHub documentation does not say. The caller handles an empty output.
       - id: versions
         if: ${{ !cancelled() }}
         run: |
