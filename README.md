@@ -189,10 +189,13 @@ The summary shows the commit that the run used. The workflow `@main` and the che
 The GitHub documentation describes these rules. See [Reusing workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) and [OpenID Connect reference](https://docs.github.com/en/actions/reference/security/oidc).
 The call from a service repository has not run in the lab yet. These rules come from the documentation.
 The call from `ci.yml` of this repository to `run.yml` is the same mechanism with one level less. It runs after each merge to `main`.
+The first run of it showed that the secret of the environment and the OIDC login work in a called workflow. The run then stopped at the SSM step, because the role did not have `ssm:GetParameter` yet ([lab-platform#18](https://github.com/jross24/lab-platform/pull/18)).
+The steps that prove the nested call in a real release are in [lab-platform#20](https://github.com/jross24/lab-platform/issues/20).
 
 ## What the suite does not do yet
 
-- A run that lab-e2e starts itself (a push, a schedule or a manual run) does not take the Test lock of lab-workflows. A release that deploys to Test at the same time can break that run. See the issue about this in lab-platform.
+- A run that lab-e2e starts itself (a push, a schedule or a manual run) does not take the Test lock of lab-workflows. A release that deploys to Test at the same time can break that run. See [lab-platform#19](https://github.com/jross24/lab-platform/issues/19).
+- The versions that pass in Test can differ from the versions in Staging and Production. See [lab-platform#21](https://github.com/jross24/lab-platform/issues/21).
 - Staging and Production have no smoke check yet. The permission and the workflow input are ready for it.
 - The suite does not check the data of a service. It checks that the services connect.
 
