@@ -11,6 +11,8 @@ description: Runs the end-to-end suite of lab-e2e as steps of the calling job. I
 # - log in to AWS with the role github-deploy of its environment (aws-actions/configure-aws-credentials).
 # The role needs ssm:GetParameter on /lab/*, because the action reads the URL of each application from SSM.
 # For a released service with no public endpoint, it also reads the parameter /lab/<service>/version.
+# It always reads the parameter /lab/flags/state/show-discounts: the declared state of the feature flag (on or off)
+# in the environment under test. The tests assert that the product matches it. A run fails if the parameter is missing.
 #
 # A composite action cannot set timeout-minutes on a step. The calling job sets the limit.
 # The suite needs less than 12 minutes. That is the limit of the job "suite" in run.yml.
@@ -190,6 +192,25 @@ runs:
           exit 1
         fi
         echo "version=${value}" >> "$GITHUB_OUTPUT"
+    # The flag show-discounts has a declared state in each environment: on or off. The stack of lab-flags writes it to the
+    # SSM parameter /lab/flags/state/show-discounts after the flags are live. The tests never call AWS, so this step reads
+    # the parameter and the run step passes it on as E2E_FLAG_SHOW_DISCOUNTS. The default tests assert this state.
+    # In Test, the override tests ask for the opposite state. A missing parameter stops the run, because the tests
+    # cannot know what the product should show.
+    - name: read the declared state of the flag from SSM
+      id: flagstate
+      shell: bash
+      run: |
+        if ! value="$(aws ssm get-parameter --name /lab/flags/state/show-discounts --query Parameter.Value --output text)"; then
+          echo "::error::Cannot read the SSM parameter /lab/flags/state/show-discounts. Did a release of lab-flags with the state parameters deploy in this account? Does github-deploy have ssm:GetParameter (lab-platform)?"
+          exit 1
+        fi
+        # The check also keeps a newline out of the output file.
+        if [[ "$value" != on && "$value" != off ]]; then
+          echo "::error::The SSM parameter /lab/flags/state/show-discounts must hold on or off."
+          exit 1
+        fi
+        echo "state=${value}" >> "$GITHUB_OUTPUT"
     - name: install the browser
       shell: bash
       working-directory: lab-e2e
@@ -205,6 +226,7 @@ runs:
         E2E_EXPECT_SERVICE: ${{ inputs.service }}
         E2E_EXPECT_VERSION: ${{ inputs.version }}
         E2E_PARAMETER_VERSION: ${{ steps.parameter.outputs.version }}
+        E2E_FLAG_SHOW_DISCOUNTS: ${{ steps.flagstate.outputs.state }}
         E2E_FAULT_DRILL: ${{ inputs.fault-drill }}
       run: |
         if [[ "$E2E_SUITE" == smoke ]]; then

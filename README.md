@@ -30,7 +30,7 @@ The suite has twelve tests in six files. Eight of them are in the smoke subset.
 | `tests/consistency.spec.ts` | The versions on the page equal the versions that web, catalogue and account report. Both APIs report the same version of core, and it equals the one on the page. | yes |
 | `tests/release.spec.ts` | The released service reports the version of the release. See "The release test". | yes |
 | `tests/drill.spec.ts` | The fault drill is off. See "The fault drill". | yes |
-| `tests/flags.spec.ts` | Both states of the feature flag `show-discounts`. Five tests. See "The feature flag show-discounts". | three of the five |
+| `tests/flags.spec.ts` | The declared state of the feature flag `show-discounts`, and the opposite state in Test. Five tests. See "The feature flag show-discounts". | three of the five |
 
 The consistency test is the check that spans all applications and services.
 It reads one version from each application, in two ways, and the two ways must agree.
@@ -48,7 +48,7 @@ It has eight tests:
 - `the versions on the page equal the versions that the services report`
 - `the released service reports the version of the release`
 - `the fault drill is off`
-- `the catalogue sends no discount` and `the page shows no discount` (the default state of the flag)
+- `the catalogue matches the declared state` and `the page matches the declared state` (the declared state of the flag)
 - `the catalogue ignores the override header` (Staging and Production only)
 
 The subset is small and read-only on purpose. It sends GET requests and loads the page. It writes no data and changes no state.
@@ -61,38 +61,51 @@ The full suite also runs the eight smoke tests, because it runs every test.
 ## The feature flag show-discounts
 
 The catalogue API has a feature flag, `show-discounts`. When the flag is on, `GET /products` adds a number `discount` to each product, and the page shows it in an element with `data-testid="discount"`.
-The flag is off in every environment. The suite tests both states of the flag in every run against Test.
+Today the flag is off in every environment.
 
-**Why both states.** The flag is off in Production. A release can pass every default test and still break the code behind the flag.
+**The declared state.** Each environment declares the state of the flag: `on` or `off`. The flag file of lab-flags holds it.
+After a release, the stack of lab-flags writes the state to the SSM parameter `/lab/flags/state/show-discounts` in that environment.
+The action `actions/suite` reads the parameter and passes the value to the tests as `E2E_FLAG_SHOW_DISCOUNTS`.
+If the parameter is missing, or holds anything but `on` or `off`, the step fails and the run stops. The tests cannot know what the product should show.
+
+**What the suite asserts.** The suite does not hard-code a state. It asserts that the product matches the declared state:
+
+- When the declared state is `off`, no product has the field `discount`, and the page has no `discount` element.
+- When the declared state is `on`, every product has a numeric `discount`, and each `product` element on the page holds one `discount` element.
+
+So a change that turns the flag on needs no edit in lab-e2e. The tests follow the parameter.
+
+**Why also the opposite state.** A release can pass every default test and still break the code behind the flag.
 Nobody would see this until someone turns the flag on. At that moment the code runs in Production for the first time, with real users.
-A flag that is on in Test and off in Production is an untested combination. So Test must run both states, on every release, to catch the break before the flag is on anywhere.
+So Test must run the other state too, on every release, to catch the break before the flag is on anywhere.
 
-**How the override works.** In Test only, a request with the header `x-lab-flags: show-discounts=on` turns the flag on for that one request.
+**How the override works.** In Test only, a request with the header `x-lab-flags: show-discounts=on` (or `=off`) sets the flag for that one request.
 No other request changes. In Test, web forwards the header from the page request to the catalogue API.
 The suite sends the header in two ways: directly to `/products`, and with the request for the page.
+In Test, the suite asks for the opposite of the declared state. If the declared state is `off`, it sends `on`. If the declared state is `on`, it sends `off`.
 
 **Why the override is off outside Test.** In Staging and Production, a header from any client would change what a user sees.
 So the catalogue API ignores the header there. The flag changes through its configuration, not through a request.
-The suite checks this too: in Staging and Production it sends the header and expects no discount.
+The suite checks this too: in Staging and Production it sends the header for the opposite state and expects the declared state.
 
 The five tests are in `tests/flags.spec.ts`:
 
 | State | Test | Runs in | Smoke |
 | --- | --- | --- | --- |
-| Default (no header) | `the catalogue sends no discount`: no product has the field `discount`. | all | yes |
-| Default (no header) | `the page shows no discount`: the page has products and no `discount` element. | all | yes |
-| Override on | `the catalogue sends a number as discount for every product`: with the header, every product has a numeric `discount`. | Test | no |
-| Override on | `the page shows one discount for each product`: with the header, each `product` element holds one `discount` element. | Test | no |
-| Override ignored | `the catalogue ignores the override header`: with the header, no product has a `discount`. | Staging, Production | yes |
+| Declared (no header) | `the catalogue matches the declared state`: the products match the declared state. | all | yes |
+| Declared (no header) | `the page matches the declared state`: the page has products, and the `discount` elements match the declared state. | all | yes |
+| Opposite, through the override | `the catalogue matches the opposite state`: with the header for the opposite state, the products match that state. | Test | no |
+| Opposite, through the override | `the page matches the opposite state`: with the header, the page matches the opposite state. | Test | no |
+| Override ignored | `the catalogue ignores the override header`: with the header for the opposite state, the products still match the declared state. | Staging, Production | yes |
 
 A test that does not apply to the environment skips, and the skip reason is in the report: "only Test allows the override" or "this check is for Staging and Production".
 The tests read `E2E_ENVIRONMENT` to decide this. If it is missing or has another value, the override tests and the ignore test all skip. The suite does not guess.
 All requests only read. The ignore test is safe for Production.
 
-The summary has one line for the flag, for example `show-discounts: default off; override on: tested.` (Test) or `show-discounts: default off; override on: not allowed here (override ignored: checked).` (Staging and Production).
+The summary has one line for the flag, for example `show-discounts: declared off; default off: tested; override on: tested.` (Test) or `show-discounts: declared off; default off: tested; override on: not allowed here (override ignored: checked).` (Staging and Production).
 A state that failed shows as `FAILED`. A state that did not run shows as `not tested`.
 
-The default tests expect the flag to be off. If someone turns the flag on in an environment, they must change these tests in the same change.
+To run the flag tests on a laptop, set `E2E_FLAG_SHOW_DISCOUNTS` to `on` or `off`. Without it, the tests fail with a message that names the variable.
 
 ## The release test
 
@@ -242,6 +255,7 @@ To run the E2E suite, give it the URL of each application:
 | `ACCOUNT_URL` | The base URL of the account API. |
 | `WARMUP_TIMEOUT_SECONDS` | Optional. The time limit of the warm-up. The default is 90. |
 | `E2E_ENVIRONMENT`, `E2E_COMMIT` | Optional. The summary uses them. The fault drill uses `E2E_ENVIRONMENT` too. The feature flag tests use `E2E_ENVIRONMENT` to decide if the override is allowed (`test`) or must be ignored (`staging`, `production`). Without it, they skip. |
+| `E2E_FLAG_SHOW_DISCOUNTS` | The declared state of the flag `show-discounts`: `on` or `off`. The action sets it from the SSM parameter `/lab/flags/state/show-discounts`. The flag tests need it. See "The feature flag show-discounts". |
 | `E2E_SUITE` | Optional. `full` or `smoke`. The summary and the fault drill use it. The default of the summary is `full`. `npm run smoke` does not set it. |
 | `E2E_EXPECT_SERVICE`, `E2E_EXPECT_VERSION` | Optional. The release test uses them. Set both or none. |
 | `E2E_PARAMETER_VERSION` | Only for a released service with no public endpoint. The value of its SSM parameter `/lab/<service>/version`. The action sets it. |
@@ -393,6 +407,7 @@ The steps are:
 2. It checks out `jross24/lab-e2e` at `ref` into the folder `lab-e2e`. The workspace of the caller holds another repository.
 3. It records the commit, sets up Node.js 22 with the npm cache, and runs `npm ci` in that folder.
 4. It reads `/lab/web/url`, `/lab/catalogue/url` and `/lab/account/url` from SSM. For a service outside the four, it also reads `/lab/<service>/version`.
+   It always reads `/lab/flags/state/show-discounts`, the declared state of the flag. A missing or bad value fails the step.
 5. It installs Chromium and runs `npx playwright test` (full) or `npx playwright test --grep @smoke` (smoke).
 6. It reads `.e2e/versions.json` into the outputs, unless the run was cancelled.
 7. If a step failed, it uploads `playwright-report/` and `test-results/`.
@@ -457,7 +472,7 @@ The call from `ci.yml` of this repository to `run.yml` is the same mechanism wit
 | `lib/warmup.ts` | The warm-up with a time limit. |
 | `lib/release.ts` | Reads the expected service and version, and finds the versions that do not match. |
 | `lib/drill.ts` | Decides if the fault drill fails the run. |
-| `lib/flags.ts` | The header of the override, the rule for each environment, and the checks of the discount on the products. |
+| `lib/flags.ts` | The declared state of the flag, the header of the override, the rule for each environment, and the checks of the discount on the products. |
 | `lib/summary.ts` | Makes the markdown of the summary. |
 | `global-setup.ts` | Runs the warm-up before the first test. |
 | `reporter/summary-reporter.ts` | Collects the results, writes the summary and the version file. |

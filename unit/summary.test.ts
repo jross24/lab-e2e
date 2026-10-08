@@ -126,63 +126,81 @@ describe('renderSummary', () => {
 });
 
 describe('the flag line', () => {
-  const flagTest = (flagState: 'default' | 'override-on' | 'override-ignored', outcome: TestRecord['outcome']): TestRecord => ({
-    title: `${flagState} ${outcome}`,
+  type Kind = 'default' | 'override' | 'override-ignored';
+  const flagTest = (flagKind: Kind, outcome: TestRecord['outcome']): TestRecord => ({
+    title: `${flagKind} ${outcome}`,
     outcome,
     attempts: outcome === 'skipped' ? 0 : 1,
     durationMs: 1,
-    flagState,
+    flagKind,
   });
-  const line = (tests: TestRecord[]): string => renderSummary(input({ tests: [passed('page'), ...tests] }));
+  // null: the run has no declared state.
+  const line = (tests: TestRecord[], flagDeclared: 'on' | 'off' | null = 'off'): string =>
+    renderSummary(input({ tests: [passed('page'), ...tests], ...(flagDeclared === null ? {} : { flagDeclared }) }));
 
   it('shows no flag line when no test has a flag state', () => {
     assert.doesNotMatch(renderSummary(input()), /show-discounts/);
   });
 
-  it('says that both states were tested in Test', () => {
-    const text = line([flagTest('default', 'passed'), flagTest('default', 'passed'), flagTest('override-on', 'passed'), flagTest('override-on', 'passed'), flagTest('override-ignored', 'skipped')]);
-    assert.match(text, /^- show-discounts: default off; override on: tested\.$/m);
+  it('says that both states were tested in Test when the flag is declared off', () => {
+    const text = line([flagTest('default', 'passed'), flagTest('default', 'passed'), flagTest('override', 'passed'), flagTest('override', 'passed'), flagTest('override-ignored', 'skipped')]);
+    assert.match(text, /^- show-discounts: declared off; default off: tested; override on: tested\.$/m);
+  });
+
+  it('says that both states were tested in Test when the flag is declared on', () => {
+    const text = line([flagTest('default', 'passed'), flagTest('override', 'passed'), flagTest('override-ignored', 'skipped')], 'on');
+    assert.match(text, /^- show-discounts: declared on; default on: tested; override off: tested\.$/m);
   });
 
   it('says that the override is not allowed in Staging and that the ignore check passed', () => {
-    const text = line([flagTest('default', 'passed'), flagTest('override-on', 'skipped'), flagTest('override-on', 'skipped'), flagTest('override-ignored', 'passed')]);
-    assert.match(text, /^- show-discounts: default off; override on: not allowed here \(override ignored: checked\)\.$/m);
+    const text = line([flagTest('default', 'passed'), flagTest('override', 'skipped'), flagTest('override', 'skipped'), flagTest('override-ignored', 'passed')]);
+    assert.match(text, /^- show-discounts: declared off; default off: tested; override on: not allowed here \(override ignored: checked\)\.$/m);
+  });
+
+  it('names the opposite state in the ignore check when the flag is declared on', () => {
+    const text = line([flagTest('default', 'passed'), flagTest('override-ignored', 'passed')], 'on');
+    assert.match(text, /^- show-discounts: declared on; default on: tested; override off: not allowed here \(override ignored: checked\)\.$/m);
   });
 
   it('says that the override is not allowed in a smoke run, where the tests of the override are absent', () => {
     const text = line([flagTest('default', 'passed'), flagTest('override-ignored', 'passed')]);
-    assert.match(text, /^- show-discounts: default off; override on: not allowed here \(override ignored: checked\)\.$/m);
+    assert.match(text, /^- show-discounts: declared off; default off: tested; override on: not allowed here \(override ignored: checked\)\.$/m);
   });
 
   it('says that a smoke run in Test does not test the override', () => {
     const text = line([flagTest('default', 'passed'), flagTest('override-ignored', 'skipped')]);
-    assert.match(text, /^- show-discounts: default off; override on: not tested\.$/m);
+    assert.match(text, /^- show-discounts: declared off; default off: tested; override on: not tested\.$/m);
   });
 
   it('counts a state that passed on a retry as tested', () => {
-    const text = line([flagTest('default', 'flaky'), flagTest('override-on', 'flaky')]);
-    assert.match(text, /^- show-discounts: default off; override on: tested\.$/m);
+    const text = line([flagTest('default', 'flaky'), flagTest('override', 'flaky')]);
+    assert.match(text, /^- show-discounts: declared off; default off: tested; override on: tested\.$/m);
   });
 
   it('shows a failed state in capital letters, never as tested', () => {
-    const text = line([flagTest('default', 'failed'), flagTest('override-on', 'passed')]);
-    assert.match(text, /^- show-discounts: default off: FAILED; override on: tested\.$/m);
-    const second = line([flagTest('default', 'passed'), flagTest('override-on', 'failed')]);
-    assert.match(second, /^- show-discounts: default off; override on: FAILED\.$/m);
+    const text = line([flagTest('default', 'failed'), flagTest('override', 'passed')]);
+    assert.match(text, /^- show-discounts: declared off; default off: FAILED; override on: tested\.$/m);
+    const second = line([flagTest('default', 'passed'), flagTest('override', 'failed')], 'on');
+    assert.match(second, /^- show-discounts: declared on; default on: tested; override off: FAILED\.$/m);
   });
 
   it('shows a failed ignore check', () => {
-    const text = line([flagTest('default', 'passed'), flagTest('override-on', 'skipped'), flagTest('override-ignored', 'failed')]);
-    assert.match(text, /^- show-discounts: default off; override on: not allowed here \(override ignored: FAILED\)\.$/m);
+    const text = line([flagTest('default', 'passed'), flagTest('override', 'skipped'), flagTest('override-ignored', 'failed')]);
+    assert.match(text, /^- show-discounts: declared off; default off: tested; override on: not allowed here \(override ignored: FAILED\)\.$/m);
   });
 
   it('does not call the default tested when the default tests were skipped', () => {
-    const text = line([flagTest('default', 'skipped'), flagTest('override-on', 'passed')]);
-    assert.match(text, /^- show-discounts: default off: not tested; override on: tested\.$/m);
+    const text = line([flagTest('default', 'skipped'), flagTest('override', 'passed')]);
+    assert.match(text, /^- show-discounts: declared off; default off: not tested; override on: tested\.$/m);
   });
 
   it('does not call the override tested when only one of its tests passed', () => {
-    const text = line([flagTest('default', 'passed'), flagTest('override-on', 'passed'), flagTest('override-on', 'skipped')]);
+    const text = line([flagTest('default', 'passed'), flagTest('override', 'passed'), flagTest('override', 'skipped')]);
     assert.match(text, /override on: not tested\./);
+  });
+
+  it('says unknown when the run has no declared state, so a reader sees that the run could not compare', () => {
+    const text = line([flagTest('default', 'failed'), flagTest('override', 'skipped')], null);
+    assert.match(text, /^- show-discounts: declared unknown; default unknown: FAILED; override unknown: not tested\.$/m);
   });
 });
