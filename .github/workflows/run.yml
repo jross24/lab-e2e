@@ -41,6 +41,11 @@ on:
         type: string
         required: false
         default: ''
+      lock-wait-minutes:
+        description: Only a run that lab-e2e starts itself uses this. A call from a release ignores it, because the release holds the lock.
+        type: string
+        required: false
+        default: '20'
     outputs:
       web-version:
         description: The version of web that the run tested.
@@ -69,6 +74,10 @@ on:
         type: choice
         options: [full, smoke]
         default: full
+      lock-wait-minutes:
+        description: 'How long the run waits for the Test lock, 0 to 20 minutes. When the wait is over, the run skips the suite with a notice. Use a small number to test the skip.'
+        type: string
+        default: '20'
   schedule:
     - cron: '17 3 * * *'
 
@@ -89,6 +98,7 @@ jobs:
       environment: ${{ steps.inputs.outputs.environment }}
       suite: ${{ steps.inputs.outputs.suite }}
       require-release: ${{ steps.inputs.outputs.require-release }}
+      lock-wait: ${{ steps.inputs.outputs.lock-wait }}
     steps:
       - id: inputs
         env:
@@ -96,6 +106,7 @@ jobs:
           SUITE: ${{ inputs.suite || 'full' }}
           SERVICE: ${{ inputs.service }}
           VERSION: ${{ inputs.version }}
+          LOCK_WAIT: ${{ inputs.lock-wait-minutes || '20' }}
           REPOSITORY: ${{ github.repository }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
@@ -113,6 +124,10 @@ jobs:
               exit 1
               ;;
           esac
+          if [[ ! "$LOCK_WAIT" =~ ^[0-9]+$ ]] || ((10#$LOCK_WAIT > 20)); then
+            echo "::error::lock-wait-minutes must be a whole number from 0 to 20."
+            exit 1
+          fi
           require_release=false
           if [[ "$SUITE" == smoke ]]; then
             if [[ "$REPOSITORY" == jross24/lab-e2e && "$WORKFLOW_REF" == jross24/lab-e2e/.github/workflows/run.yml@* ]]; then
@@ -129,12 +144,13 @@ jobs:
             echo "environment=${ENVIRONMENT}"
             echo "suite=${SUITE}"
             echo "require-release=${require_release}"
+            echo "lock-wait=$((10#$LOCK_WAIT))"
           } >> "$GITHUB_OUTPUT"
 
   # Takes the lock of Test for a run that this repository starts. It runs only for Test, because only releases
   # and these runs share it. In a call from a release, github.repository is the repository of the service.
   # Then this job is skipped, and the release holds the lock with its own jobs.
-  # The wait is 20 minutes at most, so the job limit is a little longer.
+  # The wait is 20 minutes at most (the input lock-wait-minutes can make it shorter), so the job limit is a little longer.
   # When the lock stays with another run for 20 minutes, the action does not fail. It sets acquired to false.
   lock:
     needs: [check]
@@ -156,12 +172,14 @@ jobs:
       - id: lock
         uses: jross24/lab-workflows/actions/lock-acquire@main
         with:
-          max-wait-minutes: 20
+          max-wait-minutes: ${{ needs.check.outputs.lock-wait }}
           on-timeout: skip
       - name: say that the suite did not run
         if: ${{ steps.lock.outputs.acquired == 'false' }}
+        env:
+          WAIT: ${{ needs.check.outputs.lock-wait }}
         run: |
-          echo "The suite did not run. Test stayed in use by another run, for example a release, for 20 minutes. The next run tests Test again." >> "$GITHUB_STEP_SUMMARY"
+          echo "The suite did not run. Test stayed in use by another run, for example a release, for $WAIT minutes. The next run tests Test again." >> "$GITHUB_STEP_SUMMARY"
 
   # GitHub skips a job when a job in "needs" is skipped, unless the "if" has a status function.
   # The job "lock" is skipped on purpose in a call from a release and for Staging and Production.
