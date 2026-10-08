@@ -230,7 +230,7 @@ It shows:
 - the warm-up tries and the tests that used a retry.
 
 The versions come from the consistency test. It attaches them to its result before it compares them, so a run with a failed comparison has them too. This was checked on a laptop with a changed expectation.
-A failed run still gives its outputs (`web-version` and the others) to the calling workflow. The lab checked this on 2026-10-08, in a test workflow and in the release run that the fault drill failed on purpose ([run 37761504619 of lab-svc-account](https://github.com/jross24/lab-svc-account/actions/runs/37761504619)). The release workflow writes "not recorded" for an empty output anyway, for example when the suite never ran.
+A failed run still gives its outputs (`web-version` and the others) to the calling workflow. The lab checked this on 2026-10-08, in a test workflow and in the release run that the fault drill failed on purpose ([run 37771702730 of lab-svc-account, attempt 1](https://github.com/jross24/lab-svc-account/actions/runs/37771702730)). The release workflow writes "not recorded" for an empty output anyway, for example when the suite never ran.
 
 If the run fails, the action uploads the Playwright HTML report and the traces as an artefact. It keeps them for 7 days.
 The name is `playwright-report-<suite>-<environment>-attempt<N>`, for example `playwright-report-smoke-staging-attempt1`. An artefact name must be unique in a run, so a re-run gets a new name.
