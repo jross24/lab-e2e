@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { FullResult, Reporter, Suite, TestCase, TestError } from '@playwright/test/reporter';
-import { FLAG_ANNOTATION, isFlagState } from '../lib/flags.ts';
+import { FLAG_ANNOTATION, STATE_VARIABLE, isFlagKind, parseDeclaredState } from '../lib/flags.ts';
 import { RUN_DIR, SUMMARY_FILE, VERSIONS_FILE, WARMUP_FILE } from '../lib/paths.ts';
 import { renderSummary } from '../lib/summary.ts';
 import type { SummaryInput, TestRecord } from '../lib/summary.ts';
@@ -25,14 +25,14 @@ function toRecord(test: TestCase): TestRecord {
   const last = test.results.at(-1);
   // A test of the feature flag marks its state with an annotation. See lib/flags.ts.
   const described = test.annotations.find((item) => item.type === FLAG_ANNOTATION)?.description;
-  const flagState = isFlagState(described) ? described : undefined;
+  const flagKind = isFlagKind(described) ? described : undefined;
   return {
     title: test.title,
     outcome: outcome === 'expected' ? 'passed' : outcome === 'unexpected' ? 'failed' : outcome,
     attempts: test.results.length,
     durationMs: test.results.reduce((sum, result) => sum + result.duration, 0),
     ...(last?.error?.message ? { error: last.error.message } : {}),
-    ...(flagState === undefined ? {} : { flagState }),
+    ...(flagKind === undefined ? {} : { flagKind }),
   };
 }
 
@@ -57,6 +57,11 @@ function readWarmup(startedAt: number): SummaryInput['warmup'] {
   } catch {
     return undefined;
   }
+}
+
+function flagDeclared(): Pick<SummaryInput, 'flagDeclared'> {
+  const declared = parseDeclaredState(process.env[STATE_VARIABLE]);
+  return declared === undefined ? {} : { flagDeclared: declared };
 }
 
 function commit(): string {
@@ -94,6 +99,8 @@ export default class SummaryReporter implements Reporter {
       environment: process.env['E2E_ENVIRONMENT'] ?? 'unknown',
       suite: process.env['E2E_SUITE'] === 'smoke' ? 'smoke' : 'full',
       commit: commit(),
+      // The declared state comes from the same variable as the tests. An unset or bad value shows as unknown.
+      ...flagDeclared(),
       tests,
       versions,
       warmup: readWarmup(this.startedAt),

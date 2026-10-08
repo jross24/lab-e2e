@@ -1,18 +1,124 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { readFileSync } from 'node:fs';
 import {
+  FLAG_NAME,
   OVERRIDE_HEADER,
-  OVERRIDE_VALUE,
+  STATE_PARAMETER,
+  STATE_VARIABLE,
+  discountProblems,
+  expectedDiscountCount,
+  oppositeOverrideHeaders,
+  oppositeState,
+  overrideHeaders,
   overridePolicy,
   overrideSkipReason,
+  parseDeclaredState,
   productsWithDiscount,
   productsWithoutNumericDiscount,
+  readDeclaredState,
 } from '../lib/flags.ts';
 
+describe('the declared state', () => {
+  it('reads on and off from the variable', () => {
+    assert.equal(STATE_VARIABLE, 'E2E_FLAG_SHOW_DISCOUNTS');
+    assert.equal(readDeclaredState({ E2E_FLAG_SHOW_DISCOUNTS: 'on' }), 'on');
+    assert.equal(readDeclaredState({ E2E_FLAG_SHOW_DISCOUNTS: 'off' }), 'off');
+  });
+
+  it('ignores spaces and a newline around the value', () => {
+    assert.equal(parseDeclaredState(' on\n'), 'on');
+    assert.equal(parseDeclaredState('off '), 'off');
+  });
+
+  it('accepts only the words on and off', () => {
+    for (const value of [undefined, '', 'ON', 'Off', 'true', 'false', '1', '0', 'yes', 'on off']) {
+      assert.equal(parseDeclaredState(value), undefined, String(value));
+    }
+  });
+
+  it('fails with a clear message when the variable is not set', () => {
+    assert.throws(
+      () => readDeclaredState({}),
+      (error: Error) => {
+        assert.match(error.message, /E2E_FLAG_SHOW_DISCOUNTS is not set/);
+        assert.ok(error.message.includes(STATE_PARAMETER), 'the message names the SSM parameter');
+        return true;
+      },
+    );
+    assert.throws(() => readDeclaredState({ E2E_FLAG_SHOW_DISCOUNTS: '' }), /is not set/);
+  });
+
+  it('fails with a clear message when the value is not on or off, and never prints the value', () => {
+    assert.throws(
+      () => readDeclaredState({ E2E_FLAG_SHOW_DISCOUNTS: 'secret-value' }),
+      (error: Error) => {
+        assert.match(error.message, /E2E_FLAG_SHOW_DISCOUNTS must be on or off/);
+        assert.doesNotMatch(error.message, /secret-value/);
+        return true;
+      },
+    );
+  });
+
+  it('is the SSM parameter /lab/flags/state/show-discounts', () => {
+    assert.equal(FLAG_NAME, 'show-discounts');
+    assert.equal(STATE_PARAMETER, '/lab/flags/state/show-discounts');
+  });
+
+  it('is passed on by the suite action with the same variable and the same parameter', () => {
+    const action = readFileSync(new URL('../actions/suite/action.yml', import.meta.url), 'utf8');
+    assert.ok(action.includes(STATE_PARAMETER), 'the action reads the parameter');
+    assert.ok(action.includes(`${STATE_VARIABLE}:`), 'the action passes the variable to the run step');
+  });
+});
+
+describe('oppositeState', () => {
+  it('turns on into off and off into on', () => {
+    assert.equal(oppositeState('on'), 'off');
+    assert.equal(oppositeState('off'), 'on');
+  });
+});
+
 describe('the override request', () => {
-  it('turns on the flag show-discounts through the header x-lab-flags', () => {
+  it('asks for a state through the header x-lab-flags', () => {
     assert.equal(OVERRIDE_HEADER, 'x-lab-flags');
-    assert.equal(OVERRIDE_VALUE, 'show-discounts=on');
+    assert.deepEqual(overrideHeaders('on'), { 'x-lab-flags': 'show-discounts=on' });
+    assert.deepEqual(overrideHeaders('off'), { 'x-lab-flags': 'show-discounts=off' });
+  });
+
+  it('asks for off when the flag is declared on', () => {
+    assert.deepEqual(oppositeOverrideHeaders('on'), { 'x-lab-flags': 'show-discounts=off' });
+  });
+
+  it('asks for on when the flag is declared off', () => {
+    assert.deepEqual(oppositeOverrideHeaders('off'), { 'x-lab-flags': 'show-discounts=on' });
+  });
+});
+
+describe('discountProblems', () => {
+  const products = [{ id: 'a', discount: 10 }, { id: 'b', discount: 0 }];
+  const bare = [{ id: 'a' }, { id: 'b' }];
+
+  it('for the state on, returns the products that have no numeric discount', () => {
+    assert.deepEqual(discountProblems(products, 'on'), []);
+    assert.deepEqual(discountProblems([...products, { id: 'c' }, { id: 'd', discount: null }], 'on'), ['c', 'd']);
+  });
+
+  it('for the state off, returns the products that have the field discount, even 0 or null', () => {
+    assert.deepEqual(discountProblems(bare, 'off'), []);
+    assert.deepEqual(discountProblems([{ id: 'a' }, { id: 'b', discount: 0 }, { id: 'c', discount: null }], 'off'), ['b', 'c']);
+  });
+
+  it('fails a list with discounts for the state off and a bare list for the state on', () => {
+    assert.deepEqual(discountProblems(products, 'off'), ['a', 'b']);
+    assert.deepEqual(discountProblems(bare, 'on'), ['a', 'b']);
+  });
+});
+
+describe('expectedDiscountCount', () => {
+  it('is one for each product when the flag is on and none when it is off', () => {
+    assert.equal(expectedDiscountCount('on', 6), 6);
+    assert.equal(expectedDiscountCount('off', 6), 0);
   });
 });
 
