@@ -283,7 +283,7 @@ A release that deployed to Test at the same time could break such a run.
 Now these runs take the lock in the job `lock`:
 
 - The job runs only when `github.repository` is `jross24/lab-e2e` and the environment is `test`. In a call from a release, `github.repository` is the service repository. So the job is skipped there, and the release keeps its own lock steps.
-- It waits up to 20 minutes for the lock (`max-wait-minutes: 20`). The job limit is 25 minutes.
+- It waits up to 20 minutes for the lock (`max-wait-minutes: 20`). The job limit is 25 minutes. A manual run can set a shorter wait with the input `lock-wait-minutes` (0 to 20). This lets a person test the skip without a wait of 20 minutes.
 - If the lock stays with another run for 20 minutes, the job does not fail. The action uses `on-timeout: skip`. It prints a notice and sets the output `acquired` to `false`.
 - The job `suite` then does not run, and the job summary says so. The run ends green, with a skipped suite. The next run tests Test again.
 - If the job `lock` took the lock, the job `unlock` releases it after the suite, whatever the result.
