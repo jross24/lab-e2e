@@ -32,7 +32,7 @@ on:
         required: false
         default: full
       service:
-        description: The service that the release changed. One of web, catalogue, account, core. The smoke suite needs it.
+        description: The service that the release changed. One of web, catalogue, account, core, or the name of a service with no public endpoint, for example flags. The smoke suite needs it.
         type: string
         required: false
         default: ''
