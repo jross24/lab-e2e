@@ -1,3 +1,5 @@
+import { FLAG_NAME } from './flags.ts';
+import type { FlagState } from './flags.ts';
 import { APPLICATIONS } from './versions.ts';
 import type { Versions } from './versions.ts';
 
@@ -10,6 +12,8 @@ export interface TestRecord {
   readonly attempts: number;
   readonly durationMs: number;
   readonly error?: string;
+  // Set by a test of the feature flag. The flag line of the summary uses it.
+  readonly flagState?: FlagState;
 }
 
 export interface SummaryInput {
@@ -48,6 +52,39 @@ function escapeText(text: string): string {
   return text.replace(/\|/g, '\|');
 }
 
+type StateStatus = 'passed' | 'failed' | 'not-tested';
+
+// A state passed when it has tests and every one of them passed (on the first try or on the retry).
+// One failed test fails the state. A skipped test, or no test at all, means the state was not tested.
+function stateStatus(tests: readonly TestRecord[], state: FlagState): StateStatus {
+  const own = tests.filter((test) => test.flagState === state);
+  if (own.some((test) => test.outcome === 'failed')) return 'failed';
+  if (own.length > 0 && own.every((test) => test.outcome === 'passed' || test.outcome === 'flaky')) return 'passed';
+  return 'not-tested';
+}
+
+// One line that says which states of the feature flag the run tested. There is no line when no test has a flag state.
+// In Staging and Production the override is not allowed. The line then says whether the check that the
+// environment ignores the override passed.
+export function flagLine(tests: readonly TestRecord[]): string | undefined {
+  if (!tests.some((test) => test.flagState !== undefined)) return undefined;
+
+  const standard = stateStatus(tests, 'default');
+  const on = stateStatus(tests, 'override-on');
+  const ignored = stateStatus(tests, 'override-ignored');
+
+  const defaultPart = standard === 'passed' ? 'default off' : standard === 'failed' ? 'default off: FAILED' : 'default off: not tested';
+
+  let overridePart: string;
+  if (on === 'passed') overridePart = 'override on: tested';
+  else if (on === 'failed') overridePart = 'override on: FAILED';
+  else if (ignored === 'passed') overridePart = 'override on: not allowed here (override ignored: checked)';
+  else if (ignored === 'failed') overridePart = 'override on: not allowed here (override ignored: FAILED)';
+  else overridePart = 'override on: not tested';
+
+  return `- ${FLAG_NAME}: ${defaultPart}; ${overridePart}.`;
+}
+
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
@@ -77,6 +114,9 @@ export function renderSummary(input: SummaryInput): string {
     `- Result: ${counts.passed} passed, ${counts.failed} failed, ${counts.flaky} flaky, ${counts.skipped} skipped (${seconds(input.durationMs)}).`,
     `- lab-e2e commit: \`${input.commit}\``,
   ];
+
+  const flags = flagLine(input.tests);
+  if (flags !== undefined) lines.push(flags);
 
   if (input.warmup) {
     const { healthTries, pageTries, elapsedMs } = input.warmup;

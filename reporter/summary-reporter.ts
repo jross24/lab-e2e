@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { FullResult, Reporter, Suite, TestCase, TestError } from '@playwright/test/reporter';
+import { FLAG_ANNOTATION, isFlagState } from '../lib/flags.ts';
 import { RUN_DIR, SUMMARY_FILE, VERSIONS_FILE, WARMUP_FILE } from '../lib/paths.ts';
 import { renderSummary } from '../lib/summary.ts';
 import type { SummaryInput, TestRecord } from '../lib/summary.ts';
@@ -22,12 +23,16 @@ function isVersions(value: unknown): value is Versions {
 function toRecord(test: TestCase): TestRecord {
   const outcome = test.outcome();
   const last = test.results.at(-1);
+  // A test of the feature flag marks its state with an annotation. See lib/flags.ts.
+  const described = test.annotations.find((item) => item.type === FLAG_ANNOTATION)?.description;
+  const flagState = isFlagState(described) ? described : undefined;
   return {
     title: test.title,
     outcome: outcome === 'expected' ? 'passed' : outcome === 'unexpected' ? 'failed' : outcome,
     attempts: test.results.length,
     durationMs: test.results.reduce((sum, result) => sum + result.duration, 0),
     ...(last?.error?.message ? { error: last.error.message } : {}),
+    ...(flagState === undefined ? {} : { flagState }),
   };
 }
 
