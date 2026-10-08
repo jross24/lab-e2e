@@ -93,7 +93,7 @@ jobs:
   # github.workflow_ref names that top-level workflow, so it tells a call from a manual run.
   # If the value is not what this job expects, the run counts as a call. That is the strict side.
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       environment: ${{ steps.inputs.outputs.environment }}
       suite: ${{ steps.inputs.outputs.suite }}
@@ -155,7 +155,7 @@ jobs:
   lock:
     needs: [check]
     if: ${{ github.repository == 'jross24/lab-e2e' && needs.check.outputs.environment == 'test' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: test
     timeout-minutes: 25
     permissions:
@@ -193,7 +193,7 @@ jobs:
       ${{ !cancelled()
       && needs.check.result == 'success'
       && (needs.lock.result == 'skipped' || needs.lock.outputs.acquired == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     # The environment decides the AWS account. The secret AWS_ACCOUNT_ID is the secret of this environment
     # in the repository that started the run. The README explains this for a call from another repository.
@@ -247,7 +247,7 @@ jobs:
   unlock:
     needs: [check, lock, suite]
     if: ${{ always() && needs.lock.outputs.acquired == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: test
     timeout-minutes: 5
     permissions:
