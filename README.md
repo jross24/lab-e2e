@@ -21,7 +21,7 @@ browser -> web ----> catalogue API ----> core API (private)
 
 Web, the catalogue API and the account API are public. The core API is private.
 
-The suite has seven tests in five files. Five of them are in the smoke subset.
+The suite has twelve tests in six files. Eight of them are in the smoke subset.
 
 | File | What it checks | Smoke |
 | --- | --- | --- |
@@ -30,6 +30,7 @@ The suite has seven tests in five files. Five of them are in the smoke subset.
 | `tests/consistency.spec.ts` | The versions on the page equal the versions that web, catalogue and account report. Both APIs report the same version of core, and it equals the one on the page. | yes |
 | `tests/release.spec.ts` | The released service reports the version of the release. See "The release test". | yes |
 | `tests/drill.spec.ts` | The fault drill is off. See "The fault drill". | yes |
+| `tests/flags.spec.ts` | Both states of the feature flag `show-discounts`. Five tests. See "The feature flag show-discounts". | three of the five |
 
 The consistency test is the check that spans all applications and services.
 It reads one version from each application, in two ways, and the two ways must agree.
@@ -40,20 +41,58 @@ A mix of versions shows that one part of the chain is not at the release that yo
 The smoke subset is the set of tests with the tag `@smoke`. Run it with `npm run smoke`. This is `npx playwright test --grep @smoke`.
 The tests use the Playwright option `tag`, for example `test('title', { tag: '@smoke' }, ...)`.
 
-It has five tests:
+It has eight tests:
 
 - `the page shows data from every service`
 - `each public API answers with the documented shape`
 - `the versions on the page equal the versions that the services report`
 - `the released service reports the version of the release`
 - `the fault drill is off`
+- `the catalogue sends no discount` and `the page shows no discount` (the default state of the flag)
+- `the catalogue ignores the override header` (Staging and Production only)
 
 The subset is small and read-only on purpose. It sends GET requests and loads the page. It writes no data and changes no state.
 So it is safe to run after a deployment to any environment, also Production.
 The two data tests of `tests/api.spec.ts` stay out of it. They check the data of the services, not the connections.
 Only the full suite runs them.
 
-The full suite also runs the five smoke tests, because it runs every test.
+The full suite also runs the eight smoke tests, because it runs every test.
+
+## The feature flag show-discounts
+
+The catalogue API has a feature flag, `show-discounts`. When the flag is on, `GET /products` adds a number `discount` to each product, and the page shows it in an element with `data-testid="discount"`.
+The flag is off in every environment. The suite tests both states of the flag in every run against Test.
+
+**Why both states.** The flag is off in Production. A release can pass every default test and still break the code behind the flag.
+Nobody would see this until someone turns the flag on. At that moment the code runs in Production for the first time, with real users.
+A flag that is on in Test and off in Production is an untested combination. So Test must run both states, on every release, to catch the break before the flag is on anywhere.
+
+**How the override works.** In Test only, a request with the header `x-lab-flags: show-discounts=on` turns the flag on for that one request.
+No other request changes. In Test, web forwards the header from the page request to the catalogue API.
+The suite sends the header in two ways: directly to `/products`, and with the request for the page.
+
+**Why the override is off outside Test.** In Staging and Production, a header from any client would change what a user sees.
+So the catalogue API ignores the header there. The flag changes through its configuration, not through a request.
+The suite checks this too: in Staging and Production it sends the header and expects no discount.
+
+The five tests are in `tests/flags.spec.ts`:
+
+| State | Test | Runs in | Smoke |
+| --- | --- | --- | --- |
+| Default (no header) | `the catalogue sends no discount`: no product has the field `discount`. | all | yes |
+| Default (no header) | `the page shows no discount`: the page has products and no `discount` element. | all | yes |
+| Override on | `the catalogue sends a number as discount for every product`: with the header, every product has a numeric `discount`. | Test | no |
+| Override on | `the page shows one discount for each product`: with the header, each `product` element holds one `discount` element. | Test | no |
+| Override ignored | `the catalogue ignores the override header`: with the header, no product has a `discount`. | Staging, Production | yes |
+
+A test that does not apply to the environment skips, and the skip reason is in the report: "only Test allows the override" or "this check is for Staging and Production".
+The tests read `E2E_ENVIRONMENT` to decide this. If it is missing or has another value, the override tests and the ignore test all skip. The suite does not guess.
+All requests only read. The ignore test is safe for Production.
+
+The summary has one line for the flag, for example `show-discounts: default off; override on: tested.` (Test) or `show-discounts: default off; override on: not allowed here (override ignored: checked).` (Staging and Production).
+A state that failed shows as `FAILED`. A state that did not run shows as `not tested`.
+
+The default tests expect the flag to be off. If someone turns the flag on in an environment, they must change these tests in the same change.
 
 ## The release test
 
@@ -192,7 +231,7 @@ npm run typecheck
 npm run test:unit
 ```
 
-`npm run test:unit` tests the helper code: the URL check, the warm-up, the summary, the release check and the fault drill. It uses the test runner of Node.js. It needs no network.
+`npm run test:unit` tests the helper code: the URL check, the warm-up, the summary, the release check, the fault drill and the feature flag helpers. It uses the test runner of Node.js. It needs no network.
 
 To run the E2E suite, give it the URL of each application:
 
@@ -202,7 +241,7 @@ To run the E2E suite, give it the URL of each application:
 | `CATALOGUE_URL` | The base URL of the catalogue API. |
 | `ACCOUNT_URL` | The base URL of the account API. |
 | `WARMUP_TIMEOUT_SECONDS` | Optional. The time limit of the warm-up. The default is 90. |
-| `E2E_ENVIRONMENT`, `E2E_COMMIT` | Optional. The summary uses them. The fault drill uses `E2E_ENVIRONMENT` too. |
+| `E2E_ENVIRONMENT`, `E2E_COMMIT` | Optional. The summary uses them. The fault drill uses `E2E_ENVIRONMENT` too. The feature flag tests use `E2E_ENVIRONMENT` to decide if the override is allowed (`test`) or must be ignored (`staging`, `production`). Without it, they skip. |
 | `E2E_SUITE` | Optional. `full` or `smoke`. The summary and the fault drill use it. The default of the summary is `full`. `npm run smoke` does not set it. |
 | `E2E_EXPECT_SERVICE`, `E2E_EXPECT_VERSION` | Optional. The release test uses them. Set both or none. |
 | `E2E_PARAMETER_VERSION` | Only for a released service with no public endpoint. The value of its SSM parameter `/lab/<service>/version`. The action sets it. |
@@ -231,6 +270,7 @@ It shows:
 
 - the exact version of web, catalogue, account and core that the run tested,
 - the commit of lab-e2e,
+- the states of the feature flag that the run tested, in one line (see "The feature flag show-discounts"),
 - the suite, in the title of a smoke run, for example `E2E against staging (smoke): passed`,
 - the number of tests that passed, failed, were flaky and were skipped,
 - the warm-up tries and the tests that used a retry.
@@ -410,13 +450,14 @@ The call from `ci.yml` of this repository to `run.yml` is the same mechanism wit
 
 | Path | Content |
 | --- | --- |
-| `tests/` | The five test files. |
+| `tests/` | The six test files. |
 | `lib/config.ts` | Reads and checks the three base URLs. |
 | `lib/api.ts` | Calls `/health`, `/products` and `/profile`, and checks the shape of the answers. |
 | `lib/page.ts` | Reads the four versions from the page. |
 | `lib/warmup.ts` | The warm-up with a time limit. |
 | `lib/release.ts` | Reads the expected service and version, and finds the versions that do not match. |
 | `lib/drill.ts` | Decides if the fault drill fails the run. |
+| `lib/flags.ts` | The header of the override, the rule for each environment, and the checks of the discount on the products. |
 | `lib/summary.ts` | Makes the markdown of the summary. |
 | `global-setup.ts` | Runs the warm-up before the first test. |
 | `reporter/summary-reporter.ts` | Collects the results, writes the summary and the version file. |

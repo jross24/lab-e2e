@@ -20,7 +20,8 @@ export interface CatalogueAnswer {
   readonly service: 'catalogue';
   readonly version: string;
   readonly core: CoreSummary;
-  readonly products: readonly { id: string; name: string; price: number }[];
+  // discount is there only when the feature flag show-discounts is on. See lib/flags.ts.
+  readonly products: readonly { id: string; name: string; price: number; discount?: unknown }[];
 }
 
 export interface AccountAnswer {
@@ -38,10 +39,15 @@ function firstLine(error: unknown): string {
 }
 
 // One GET request. A network error and a body that is not JSON each get a message that names the target.
-async function getJson(request: APIRequestContext, url: string, what: string): Promise<{ status: number; body: unknown }> {
+async function getJson(
+  request: APIRequestContext,
+  url: string,
+  what: string,
+  headers?: Record<string, string>,
+): Promise<{ status: number; body: unknown }> {
   let response;
   try {
-    response = await request.get(url, { timeout: REQUEST_TIMEOUT_MS });
+    response = await request.get(url, { timeout: REQUEST_TIMEOUT_MS, ...(headers ? { headers } : {}) });
   } catch (error) {
     throw new Error(`${what} is not reachable at ${url}: ${firstLine(error)}`);
   }
@@ -62,8 +68,9 @@ export async function fetchHealth(request: APIRequestContext, urls: Urls): Promi
   return body as HealthAnswer;
 }
 
-export async function fetchCatalogue(request: APIRequestContext, urls: Urls): Promise<CatalogueAnswer> {
-  const { status, body } = await getJson(request, `${urls.catalogue}/products`, 'the catalogue API');
+// The optional headers go with this one request only. The tests of the feature flag use it for the override.
+export async function fetchCatalogue(request: APIRequestContext, urls: Urls, headers?: Record<string, string>): Promise<CatalogueAnswer> {
+  const { status, body } = await getJson(request, `${urls.catalogue}/products`, 'the catalogue API', headers);
   expect(status, 'GET /products of the catalogue API').toBe(200);
   expect(body, 'the body of GET /products').toMatchObject({
     service: 'catalogue',
