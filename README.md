@@ -230,7 +230,7 @@ It shows:
 - the warm-up tries and the tests that used a retry.
 
 The versions come from the consistency test. It attaches them to its result before it compares them, so a run with a failed comparison has them too. This was checked on a laptop with a changed expectation.
-The lab has not checked whether a failed run gives its outputs (`web-version` and the others) to the calling workflow. The GitHub documentation does not say. The release workflow writes "not recorded" for an empty output.
+A failed run still gives its outputs (`web-version` and the others) to the calling workflow. The lab checked this on 2026-10-08, in a test workflow and in the release run that the fault drill failed on purpose ([run 37761504619 of lab-svc-account](https://github.com/jross24/lab-svc-account/actions/runs/37761504619)). The release workflow writes "not recorded" for an empty output anyway, for example when the suite never ran.
 
 If the run fails, the action uploads the Playwright HTML report and the traces as an artefact. It keeps them for 7 days.
 The name is `playwright-report-<suite>-<environment>-attempt<N>`, for example `playwright-report-smoke-staging-attempt1`. An artefact name must be unique in a run, so a re-run gets a new name.
@@ -303,10 +303,10 @@ The holder text of the lock is `<repository>#<run id>#<attempt>`. The step does 
 - **In a release,** the holder text is the one of the caller. `lock-test` took the lock, so the step finds its own lock. It starts the expiry again and changes nothing else.
 - **In a run that lab-e2e starts,** the job `lock` holds the lock. The step is a no-op here too.
 - **After "Re-run failed jobs",** GitHub runs only the failed jobs again. `lock-test` (or `lock`) did not fail, so it does not run again, and the first attempt has released the lock. The step takes the lock again if Test is free.
-- **If another run holds the lock,** the step fails at once. The error tells the person to run all jobs again, so that the lock job queues for the lock.
+- **If another run holds the lock,** the step fails at once. The error tells the person to wait until that run has ended, and then to re-run the failed jobs again. "Re-run all jobs" is not the advice, because the build job of a release cannot make its release again.
 
-The lab has not checked whether the job that releases the lock runs again after "Re-run failed jobs".
-If it does not, the lock ends by itself after its expiry time. The README of lab-workflows gives the time.
+The job that releases the lock does run again after "Re-run failed jobs", because it needs the failed job. The lab checked this on 2026-10-08. In [run 37761504619 of lab-svc-account](https://github.com/jross24/lab-svc-account/actions/runs/37761504619), attempt 1 failed in the suite on purpose and released the lock. Attempt 2 took the lock again in the suite (the holder text ended with `#2`) and `unlock-test` released it again.
+When the lock is held by another run, attempt 2 fails with the message above. The lab checked this in [run 37771702730](https://github.com/jross24/lab-svc-account/actions/runs/37771702730).
 
 The lock covers Test only. Staging and Production have no lock in this repository.
 
@@ -390,10 +390,8 @@ These rules decide which environment, which secrets and which OIDC identity the 
 The summary shows the commit that the run used. The workflow `@main`, the action `@main` and the checkout of `main` can differ if someone merges between the reads.
 
 The GitHub documentation describes these rules. See [Reusing workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows) and [OpenID Connect reference](https://docs.github.com/en/actions/reference/security/oidc).
-The call from a service repository has not run in the lab yet. These rules come from the documentation.
+The lab proved these rules in real releases: the call from a service repository to `release.yml`, and from there to `run.yml`, works with the environment secret and the OIDC identity of the service repository ([lab-platform#20](https://github.com/jross24/lab-platform/issues/20)).
 The call from `ci.yml` of this repository to `run.yml` is the same mechanism with one level less. It runs after each merge to `main`.
-The first run of it showed that the secret of the environment and the OIDC login work in a called workflow. The run then stopped at the SSM step, because the role did not have `ssm:GetParameter` yet ([lab-platform#18](https://github.com/jross24/lab-platform/pull/18)).
-The steps that prove the nested call in a real release are in [lab-platform#20](https://github.com/jross24/lab-platform/issues/20).
 
 ## What the suite does not do yet
 

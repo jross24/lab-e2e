@@ -217,7 +217,7 @@ jobs:
       # - In a call from a release, the holder text is <repository>#<run id>#<attempt> of the caller.
       #   The release took the lock in lock-test. So this step is a no-op that starts the expiry again.
       #   After "Re-run failed jobs", lock-test does not run again. This step then takes the lock again if Test is free.
-      #   If another run holds the lock, the step fails and tells the person to run all jobs again.
+      #   If another run holds the lock, the step fails and tells the person to wait for that run and to re-run the failed jobs again.
       # - In a run that lab-e2e starts, the job "lock" holds the lock. So this step is a no-op too.
       # The release job unlock-test (or the job "unlock" below) releases the lock.
       - name: make sure this run holds the lock
@@ -226,7 +226,7 @@ jobs:
         with:
           max-wait-minutes: 0
           on-timeout: fail
-          fail-hint: 'If this is a re-run of failed jobs, the lock was released in the first attempt and another run holds it now. Run all jobs again, so that lock-test queues for the lock.'
+          fail-hint: 'If this is a re-run of failed jobs, the lock was released in the first attempt and another run holds it now. Wait until that run has ended. Then re-run the failed jobs again.'
       # In a nested call, a local path (uses: ./) would point to the workspace of the caller.
       # So the action has its full name. A pull request that changes the action cannot test itself.
       # A run of this repository tests its own commit. A call from another repository tests main.
