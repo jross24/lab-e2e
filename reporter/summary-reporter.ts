@@ -7,6 +7,7 @@ import { renderSummary } from '../lib/summary.ts';
 import type { SummaryInput, TestRecord } from '../lib/summary.ts';
 import { APPLICATIONS } from '../lib/versions.ts';
 import type { Versions } from '../lib/versions.ts';
+import { slowChainWarning } from '../lib/warmup.ts';
 
 // Writes the summary of the run:
 //   - to the job summary of GitHub ($GITHUB_STEP_SUMMARY), when it exists
@@ -94,6 +95,7 @@ export default class SummaryReporter implements Reporter {
     if (this.errors.length === 0 && allTests.every((test) => test.results.length === 0)) return;
     const tests = allTests.map(toRecord);
     const versions = findVersions(allTests);
+    const warmup = readWarmup(this.startedAt);
 
     const markdown = renderSummary({
       environment: process.env['E2E_ENVIRONMENT'] ?? 'unknown',
@@ -103,7 +105,7 @@ export default class SummaryReporter implements Reporter {
       ...flagDeclared(),
       tests,
       versions,
-      warmup: readWarmup(this.startedAt),
+      warmup,
       durationMs: result.duration,
       errors: this.errors,
     });
@@ -117,8 +119,10 @@ export default class SummaryReporter implements Reporter {
     if (target) appendFileSync(target, `${markdown}\n`);
     console.log(`\n${markdown}`);
 
-    // A retry is a warning, not a pass without comment.
+    // A retry and a slow cold chain are warnings, not a pass without comment.
     if (process.env['GITHUB_ACTIONS']) {
+      const slow = warmup ? slowChainWarning(warmup) : undefined;
+      if (slow !== undefined) console.log(`::warning title=E2E cold chain slow::${slow}`);
       for (const test of tests.filter((item) => item.attempts > 1)) {
         console.log(`::warning title=E2E retry used::${test.title} needed ${test.attempts} attempts (${test.outcome}).`);
       }

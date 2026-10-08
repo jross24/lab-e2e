@@ -3,8 +3,9 @@ import { readUrls } from './lib/config.ts';
 import { RUN_DIR, WARMUP_FILE } from './lib/paths.ts';
 import { warmUp } from './lib/warmup.ts';
 
-// Warms the chain before the first test. See lib/warmup.ts for the reason.
-// WARMUP_TIMEOUT_SECONDS changes the time limit. The default is 90 seconds.
+// Warms the chain before the first test and records the time of the first calls. See lib/warmup.ts for the reason.
+// WARMUP_TIMEOUT_SECONDS changes the time limit of the poll of /health. The default is 90 seconds.
+// The first calls of the two APIs and of the page do not retry. Their limit for one request is 15 seconds.
 const DEFAULT_TIMEOUT_SECONDS = 90;
 
 export default async function globalSetup(): Promise<void> {
@@ -20,6 +21,8 @@ export default async function globalSetup(): Promise<void> {
 
   const result = await warmUp({
     webUrl: urls.web,
+    catalogueUrl: urls.catalogue,
+    accountUrl: urls.account,
     timeoutMs: seconds * 1000,
     intervalMs: 3_000,
     requestTimeoutMs: 15_000,

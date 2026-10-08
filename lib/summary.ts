@@ -2,6 +2,8 @@ import { FLAG_NAME, oppositeState } from './flags.ts';
 import type { FlagKind, FlagValue } from './flags.ts';
 import { APPLICATIONS } from './versions.ts';
 import type { Versions } from './versions.ts';
+import { API_LIMIT_MS, coldChainMs, slowChainWarning } from './warmup.ts';
+import type { WarmupResult } from './warmup.ts';
 
 // The job summary of a run. The functions are pure: data in, markdown out.
 
@@ -25,7 +27,7 @@ export interface SummaryInput {
   readonly flagDeclared?: FlagValue;
   readonly tests: readonly TestRecord[];
   readonly versions: Versions | undefined;
-  readonly warmup: { readonly healthTries: number; readonly pageTries: number; readonly elapsedMs: number } | undefined;
+  readonly warmup: WarmupResult | undefined;
   readonly durationMs: number;
   // Errors of the run itself, for example a failed warm-up. They are not errors of one test.
   readonly errors: readonly string[];
@@ -114,19 +116,27 @@ export function renderSummary(input: SummaryInput): string {
   const suite = input.suite ?? 'full';
   const title = suite === 'full' ? input.environment : `${input.environment} (${suite})`;
 
-  const lines: string[] = [
-    `### E2E against ${title}: ${verdict}`,
-    '',
+  const lines: string[] = [`### E2E against ${title}: ${verdict}`, ''];
+
+  // A slow cold chain is a warning at the top. It is not a pass in silence. The run still passes.
+  const warning = input.warmup ? slowChainWarning(input.warmup) : undefined;
+  if (warning !== undefined) lines.push('> [!WARNING]', `> ${warning}`, '');
+
+  lines.push(
     `- Result: ${counts.passed} passed, ${counts.failed} failed, ${counts.flaky} flaky, ${counts.skipped} skipped (${seconds(input.durationMs)}).`,
     `- lab-e2e commit: \`${input.commit}\``,
-  ];
+  );
 
   const flags = flagLine(input.tests, input.flagDeclared);
   if (flags !== undefined) lines.push(flags);
 
   if (input.warmup) {
-    const { healthTries, pageTries, elapsedMs } = input.warmup;
-    lines.push(`- Warm-up: /health ${plural(healthTries, 'try', 'tries')}, page ${plural(pageTries, 'try', 'tries')}, ${seconds(elapsedMs)}.`);
+    const { healthTries, catalogueMs, accountMs, pageMs } = input.warmup;
+    // The first calls after the deployment. The slowest API call is the cold chain. Web allows 5 s for each API.
+    lines.push(
+      `- Warm-up, first calls: catalogue API ${seconds(catalogueMs)}, account API ${seconds(accountMs)}, page ${seconds(pageMs)}; ` +
+        `slowest ${seconds(coldChainMs(input.warmup))} of ${API_LIMIT_MS / 1000} s; /health ${plural(healthTries, 'try', 'tries')}.`,
+    );
   }
 
   if (retried.length === 0) {

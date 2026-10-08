@@ -209,19 +209,35 @@ It is a smoke check of the connections. It is not the contract test.
 
 ## The cold start and the warm-up
 
-After a deployment, the first request can take 4 or 5 seconds. Four Lambda functions start cold in a chain.
-Web waits only 5 seconds for each API. So the first page can show an error block.
+After a deployment, the first requests are slow. Four Lambda functions start cold in a chain: web, catalogue, account and core.
+Web waits only 5 seconds for each API. If the chain needs more, the page shows an error block.
 This is a known behaviour (see [lab-platform#17](https://github.com/jross24/lab-platform/issues/17)).
 
-The suite does not hide this with blanket retries. It uses a global setup that warms the chain (`lib/warmup.ts`):
+The margin is large now. The functions have 512 MB of memory and tracing. The logs of web in Test (2026-10-08, releases 0.3.0 to 0.6.0) show:
 
-1. It polls `GET /health` of web until it answers. This request calls no other service.
-2. It loads `GET /` of web until the page has no error block. This request wakes the whole chain.
+- the slowest cold page took 2.9 s, and the slowest first call of an API took 2.4 s, so the margin to the 5 s limit is more than 2 s,
+- at 128 MB the cold page took up to 4.6 s,
+- web used 93 to 104 MB of its 512 MB.
 
-The warm-up has a time limit. The default is 90 seconds. Set `WARMUP_TIMEOUT_SECONDS` to change it.
-If the limit passes, the warm-up stops the run with the last reason, for example `the page shows catalogue-error`.
-So a real failure still fails the run.
-The summary shows how many tries the warm-up needed.
+The suite does not hide a slow chain with a retry. A retry would pass a release that is too slow.
+A global setup wakes the chain in the order of the page, and it times each step (`lib/warmup.ts`):
+
+1. It polls `GET /health` of web until it answers. This request calls no other service. It is the only poll.
+2. It calls `GET /products` of the catalogue API and `GET /profile` of the account API once, at the same time, as the page does.
+   They wake catalogue, account and core. The slower time of the two is the cold chain.
+3. It loads `GET /` of web once. No cold function is left, so the page must have no error block.
+
+Step 2 and step 3 do not retry. An error answer, no answer in 15 seconds or an error block on the page stops the run.
+The error names the step, the reason and the times, for example `the page shows catalogue-error after 0.4 s`.
+The poll of `/health` has a time limit. The default is 90 seconds. Set `WARMUP_TIMEOUT_SECONDS` to change it.
+
+A slow answer does not stop the run, but it is never a pass in silence.
+If the cold chain is above 4 seconds, the job summary starts with a warning, and the log has the annotation `E2E cold chain slow`.
+The warning means that the margin to the limit of 5 seconds is below 1 second. Find the service that got slower.
+The test runner measures the times, so they include the network.
+
+The smoke suite of the deploy jobs in Staging and Production uses the same configuration. So it has the same warm-up and the same warning.
+The summary of every run shows the times of the first calls: `Warm-up, first calls: catalogue API 2.5 s, account API 2.0 s, page 0.4 s; slowest 2.5 s of 5 s`.
 
 ## Retries
 
@@ -253,7 +269,7 @@ To run the E2E suite, give it the URL of each application:
 | `WEB_URL` | The base URL of web. |
 | `CATALOGUE_URL` | The base URL of the catalogue API. |
 | `ACCOUNT_URL` | The base URL of the account API. |
-| `WARMUP_TIMEOUT_SECONDS` | Optional. The time limit of the warm-up. The default is 90. |
+| `WARMUP_TIMEOUT_SECONDS` | Optional. The time limit of the poll of `/health` in the warm-up. The default is 90. |
 | `E2E_ENVIRONMENT`, `E2E_COMMIT` | Optional. The summary uses them. The fault drill uses `E2E_ENVIRONMENT` too. The feature flag tests use `E2E_ENVIRONMENT` to decide if the override is allowed (`test`) or must be ignored (`staging`, `production`). Without it, they skip. |
 | `E2E_FLAG_SHOW_DISCOUNTS` | The declared state of the flag `show-discounts`: `on` or `off`. The action sets it from the SSM parameter `/lab/flags/state/show-discounts`. The flag tests need it. See "The feature flag show-discounts". |
 | `E2E_SUITE` | Optional. `full` or `smoke`. The summary and the fault drill use it. The default of the summary is `full`. `npm run smoke` does not set it. |
@@ -287,7 +303,8 @@ It shows:
 - the states of the feature flag that the run tested, in one line (see "The feature flag show-discounts"),
 - the suite, in the title of a smoke run, for example `E2E against staging (smoke): passed`,
 - the number of tests that passed, failed, were flaky and were skipped,
-- the warm-up tries and the tests that used a retry.
+- the time of the first call of each API and of the page (the warm-up), with a warning if the slowest API call is above 4 seconds,
+- the tests that used a retry.
 
 The versions come from the consistency test. It attaches them to its result before it compares them, so a run with a failed comparison has them too. This was checked on a laptop with a changed expectation.
 A failed run still gives its outputs (`web-version` and the others) to the calling workflow. The lab checked this on 2026-10-08, in a test workflow and in the release run that the fault drill failed on purpose ([run 37771702730 of lab-svc-account, attempt 1](https://github.com/jross24/lab-svc-account/actions/runs/37771702730)). The release workflow writes "not recorded" for an empty output anyway, for example when the suite never ran.
@@ -469,12 +486,12 @@ The call from `ci.yml` of this repository to `run.yml` is the same mechanism wit
 | `lib/config.ts` | Reads and checks the three base URLs. |
 | `lib/api.ts` | Calls `/health`, `/products` and `/profile`, and checks the shape of the answers. |
 | `lib/page.ts` | Reads the four versions from the page. |
-| `lib/warmup.ts` | The warm-up with a time limit. |
+| `lib/warmup.ts` | The warm-up: the poll of `/health`, the first calls of the APIs and the page, and the check of the cold chain. |
 | `lib/release.ts` | Reads the expected service and version, and finds the versions that do not match. |
 | `lib/drill.ts` | Decides if the fault drill fails the run. |
 | `lib/flags.ts` | The declared state of the flag, the header of the override, the rule for each environment, and the checks of the discount on the products. |
 | `lib/summary.ts` | Makes the markdown of the summary. |
-| `global-setup.ts` | Runs the warm-up before the first test. |
+| `global-setup.ts` | Runs the warm-up before the first test and saves its times for the summary. |
 | `reporter/summary-reporter.ts` | Collects the results, writes the summary and the version file. |
 | `unit/` | Unit tests of the helper code. |
 | `actions/suite/action.yml` | The composite action that runs the suite as steps of another job. |
