@@ -2,6 +2,7 @@ name: ci
 
 # A pull request gets static checks only. It has no AWS access, because the environments are limited to main.
 # After a merge to main, the suite runs against Test. A change to the tests is itself tested against Test.
+# That run takes the Test lock first (the job "lock" in run.yml), so a release cannot deploy to Test while the suite runs.
 on:
   pull_request:
   push:

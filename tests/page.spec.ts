@@ -4,8 +4,8 @@ import { VERSION_TEST_IDS } from '../lib/page.ts';
 import { VERSION_PATTERN } from '../lib/versions.ts';
 
 // The page of web is the only thing that a visitor sees. If it renders data from the other services,
-// the chain web -> catalogue and account -> core works.
-test('the page shows data from every service', async ({ page }) => {
+// the chain web -> catalogue and account -> core works. It is part of the smoke subset.
+test('the page shows data from every service', { tag: '@smoke' }, async ({ page }) => {
   const response = await page.goto(readUrls().web);
   expect(response?.status(), 'GET / of web').toBe(200);
 

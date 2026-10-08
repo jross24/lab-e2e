@@ -87,6 +87,7 @@ export default class SummaryReporter implements Reporter {
 
     const markdown = renderSummary({
       environment: process.env['E2E_ENVIRONMENT'] ?? 'unknown',
+      suite: process.env['E2E_SUITE'] === 'smoke' ? 'smoke' : 'full',
       commit: commit(),
       tests,
       versions,

@@ -55,6 +55,27 @@ describe('renderSummary', () => {
     assert.match(renderSummary(input({ tests: [] })), /### E2E against test: failed/);
   });
 
+  it('names the smoke suite in the title', () => {
+    assert.match(renderSummary(input({ environment: 'staging', suite: 'smoke' })), /^### E2E against staging \(smoke\): passed$/m);
+  });
+
+  it('keeps the title of the full suite plain, with or without the suite field', () => {
+    assert.match(renderSummary(input({ suite: 'full' })), /^### E2E against test: passed$/m);
+    assert.match(renderSummary(input()), /^### E2E against test: passed$/m);
+  });
+
+  it('shows the verdict of a failed smoke run in the title', () => {
+    const tests = [{ title: 'drill', outcome: 'failed', attempts: 1, durationMs: 1, error: 'fault drill: on purpose' } satisfies TestRecord];
+    assert.match(renderSummary(input({ environment: 'production', suite: 'smoke', tests })), /^### E2E against production \(smoke\): failed$/m);
+  });
+
+  it('does not call a run failed because one test was skipped', () => {
+    const tests = [passed('page'), { title: 'release', outcome: 'skipped', attempts: 0, durationMs: 0 } satisfies TestRecord];
+    const text = renderSummary(input({ suite: 'smoke', tests }));
+    assert.match(text, /### E2E against test \(smoke\): passed/);
+    assert.match(text, /1 passed, 0 failed, 0 flaky, 1 skipped/);
+  });
+
   it('says that no retry was used', () => {
     assert.match(renderSummary(input()), /Retries used: none/);
   });

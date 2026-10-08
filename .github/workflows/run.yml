@@ -6,8 +6,18 @@ name: run
 # - workflow_call: a release in another repository calls it after the deployment to Test.
 #   The caller must give these permissions: contents: read, id-token: write.
 #   The caller must pass its secrets with "secrets: inherit". The README gives the reason.
-# - workflow_dispatch: a person runs it by hand.
+#   The inputs suite, service and version are optional. A call with only "environment" runs the full suite.
+# - workflow_dispatch: a person runs it by hand. The person picks the environment and the suite.
 # - schedule: it runs every night against Test.
+#
+# The jobs are check, lock, suite and unlock. The job "suite" runs the composite action actions/suite.
+# A release that deploys to Staging or Production runs that action as steps of its own deploy job and does not call this workflow.
+#
+# The Test lock: a release holds the lock of Test from lock-test to unlock-test (lab-workflows).
+# A run that lab-e2e starts itself (a push, the schedule, a manual run) takes the same lock in the job "lock",
+# so that a release does not deploy to Test while the suite runs. If a release holds the lock for 20 minutes,
+# the run skips the suite with a notice. It does not fail. In a call from a release, github.repository is the
+# repository of the service, so the job "lock" does not run, and the release keeps its own lock steps.
 on:
   workflow_call:
     inputs:
@@ -16,6 +26,21 @@ on:
         type: string
         required: false
         default: test
+      suite:
+        description: The suite to run. One of full, smoke. The smoke suite runs only the tests with the tag @smoke.
+        type: string
+        required: false
+        default: full
+      service:
+        description: The service that the release changed. One of web, catalogue, account, core. The smoke suite needs it.
+        type: string
+        required: false
+        default: ''
+      version:
+        description: The version of the release, for example 0.3.1. The smoke suite needs it.
+        type: string
+        required: false
+        default: ''
     outputs:
       web-version:
         description: The version of web that the run tested.
@@ -39,6 +64,11 @@ on:
         type: choice
         options: [test, staging, production]
         default: test
+      suite:
+        description: The suite to run. The smoke suite runs only the tests with the tag @smoke.
+        type: choice
+        options: [full, smoke]
+        default: full
   schedule:
     - cron: '17 3 * * *'
 
@@ -46,15 +76,28 @@ permissions: {}
 
 jobs:
   # A job that names an environment that does not exist creates it. So this job checks the name first.
-  # A scheduled run has no input, so it tests Test.
+  # A scheduled run has no input, so it runs the full suite against Test.
+  #
+  # The smoke suite checks the release, so a call needs the inputs service and version.
+  # A run that this workflow starts itself (a manual run or the schedule) has no release.
+  # Then the smoke suite runs, and the release test is skipped. A call has another top-level workflow.
+  # github.workflow_ref names that top-level workflow, so it tells a call from a manual run.
+  # If the value is not what this job expects, the run counts as a call. That is the strict side.
   check:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.inputs.outputs.environment }}
+      suite: ${{ steps.inputs.outputs.suite }}
+      require-release: ${{ steps.inputs.outputs.require-release }}
     steps:
       - id: inputs
         env:
           ENVIRONMENT: ${{ inputs.environment || 'test' }}
+          SUITE: ${{ inputs.suite || 'full' }}
+          SERVICE: ${{ inputs.service }}
+          VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           case "$ENVIRONMENT" in
             test | staging | production) ;;
@@ -63,10 +106,75 @@ jobs:
               exit 1
               ;;
           esac
-          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+          case "$SUITE" in
+            full | smoke) ;;
+            *)
+              echo "::error::suite must be full or smoke."
+              exit 1
+              ;;
+          esac
+          require_release=false
+          if [[ "$SUITE" == smoke ]]; then
+            if [[ "$REPOSITORY" == jross24/lab-e2e && "$WORKFLOW_REF" == jross24/lab-e2e/.github/workflows/run.yml@* ]]; then
+              echo "This is a manual run of the smoke suite. There is no release to check."
+            else
+              require_release=true
+              if [[ -z "$SERVICE" || -z "$VERSION" ]]; then
+                echo "::error::The smoke suite checks the release. A call must set the inputs service and version."
+                exit 1
+              fi
+            fi
+          fi
+          {
+            echo "environment=${ENVIRONMENT}"
+            echo "suite=${SUITE}"
+            echo "require-release=${require_release}"
+          } >> "$GITHUB_OUTPUT"
 
-  suite:
+  # Takes the lock of Test for a run that this repository starts. It runs only for Test, because only releases
+  # and these runs share it. In a call from a release, github.repository is the repository of the service.
+  # Then this job is skipped, and the release holds the lock with its own jobs.
+  # The wait is 20 minutes at most, so the job limit is a little longer.
+  # When the lock stays with another run for 20 minutes, the action does not fail. It sets acquired to false.
+  lock:
     needs: [check]
+    if: ${{ github.repository == 'jross24/lab-e2e' && needs.check.outputs.environment == 'test' }}
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      acquired: ${{ steps.lock.outputs.acquired }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - id: lock
+        uses: jross24/lab-workflows/actions/lock-acquire@main
+        with:
+          max-wait-minutes: 20
+          on-timeout: skip
+      - name: say that the suite did not run
+        if: ${{ steps.lock.outputs.acquired == 'false' }}
+        run: |
+          echo "The suite did not run. Test stayed in use by another run, for example a release, for 20 minutes. The next run tests Test again." >> "$GITHUB_STEP_SUMMARY"
+
+  # GitHub skips a job when a job in "needs" is skipped, unless the "if" has a status function.
+  # The job "lock" is skipped on purpose in a call from a release and for Staging and Production.
+  # So the "if" uses !cancelled(), and then checks the needs by hand:
+  # - check passed,
+  # - lock was skipped (this run needs no lock), or lock took the lock (acquired is true).
+  # If lock failed, or ended with acquired false, this job is skipped.
+  suite:
+    needs: [check, lock]
+    if: >-
+      ${{ !cancelled()
+      && needs.check.result == 'success'
+      && (needs.lock.result == 'skipped' || needs.lock.outputs.acquired == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     # The environment decides the AWS account. The secret AWS_ACCOUNT_ID is the secret of this environment
@@ -76,68 +184,61 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      web-version: ${{ steps.versions.outputs.web }}
-      catalogue-version: ${{ steps.versions.outputs.catalogue }}
-      account-version: ${{ steps.versions.outputs.account }}
-      core-version: ${{ steps.versions.outputs.core }}
-      commit: ${{ steps.commit.outputs.sha }}
+      web-version: ${{ steps.e2e.outputs.web-version }}
+      catalogue-version: ${{ steps.e2e.outputs.catalogue-version }}
+      account-version: ${{ steps.e2e.outputs.account-version }}
+      core-version: ${{ steps.e2e.outputs.core-version }}
+      commit: ${{ steps.e2e.outputs.commit }}
     steps:
-      # In a called workflow, the default checkout is the caller repository. So this step names the repository.
-      # A run of this repository tests its own commit. A call from another repository tests main.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: jross24/lab-e2e
-          ref: ${{ github.repository == 'jross24/lab-e2e' && github.sha || 'main' }}
-          persist-credentials: false
-      - id: commit
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-deploy
           aws-region: ${{ vars.AWS_REGION }}
           mask-aws-account-id: true
-      # The tests never call AWS. This step is the only AWS call of the run.
-      - name: read the URL of each application from SSM
-        run: |
-          for pair in web:WEB_URL catalogue:CATALOGUE_URL account:ACCOUNT_URL; do
-            name="${pair%%:*}"
-            variable="${pair##*:}"
-            if ! value="$(aws ssm get-parameter --name "/lab/${name}/url" --query Parameter.Value --output text)"; then
-              echo "::error::Cannot read the SSM parameter /lab/${name}/url. Does github-deploy have ssm:GetParameter (lab-platform)? Is ${name} deployed in this account?"
-              exit 1
-            fi
-            if [[ ! "$value" =~ ^https:// ]]; then
-              echo "::error::The SSM parameter /lab/${name}/url is not an https URL."
-              exit 1
-            fi
-            echo "${variable}=${value}" >> "$GITHUB_ENV"
-          done
-      - run: npx playwright install --with-deps chromium
-      - name: run the suite
-        env:
-          E2E_ENVIRONMENT: ${{ needs.check.outputs.environment }}
-          E2E_COMMIT: ${{ steps.commit.outputs.sha }}
-        run: npx playwright test
-      # The reporter writes the versions that the consistency test observed. A failed comparison still has them
-      # (checked on a laptop). Whether a failed run gives these outputs to the caller is not verified:
-      # the GitHub documentation does not say. The caller handles an empty output.
-      - id: versions
-        if: ${{ !cancelled() }}
-        run: |
-          if [[ -f .e2e/versions.json ]]; then
-            jq -r 'to_entries[] | "\(.key)=\(.value)"' .e2e/versions.json >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ failure() }}
+      # Makes sure that this run holds the lock of Test. The step waits for nothing and does not release the lock.
+      # - In a call from a release, the holder text is <repository>#<run id>#<attempt> of the caller.
+      #   The release took the lock in lock-test. So this step is a no-op that starts the expiry again.
+      #   After "Re-run failed jobs", lock-test does not run again. This step then takes the lock again if Test is free.
+      #   If another run holds the lock, the step fails and tells the person to run all jobs again.
+      # - In a run that lab-e2e starts, the job "lock" holds the lock. So this step is a no-op too.
+      # The release job unlock-test (or the job "unlock" below) releases the lock.
+      - name: make sure this run holds the lock
+        if: ${{ needs.check.outputs.environment == 'test' }}
+        uses: jross24/lab-workflows/actions/lock-acquire@main
         with:
-          name: playwright-report
-          path: |
-            playwright-report/
-            test-results/
-          retention-days: 7
-          if-no-files-found: ignore
+          max-wait-minutes: 0
+          on-timeout: fail
+          fail-hint: 'If this is a re-run of failed jobs, the lock was released in the first attempt and another run holds it now. Run all jobs again, so that lock-test queues for the lock.'
+      # In a nested call, a local path (uses: ./) would point to the workspace of the caller.
+      # So the action has its full name. A pull request that changes the action cannot test itself.
+      # A run of this repository tests its own commit. A call from another repository tests main.
+      - id: e2e
+        uses: jross24/lab-e2e/actions/suite@main
+        with:
+          environment: ${{ needs.check.outputs.environment }}
+          suite: ${{ needs.check.outputs.suite }}
+          service: ${{ inputs.service }}
+          version: ${{ inputs.version }}
+          require-release: ${{ needs.check.outputs.require-release }}
+          ref: ${{ github.repository == 'jross24/lab-e2e' && github.sha || 'main' }}
+          fault-drill: ${{ vars.E2E_FAULT_DRILL }}
+
+  # Releases the lock that the job "lock" took. It runs after a pass, a failure and a cancel.
+  # It does not run when the job "lock" did not take the lock. The release of the lock never fails
+  # because of the lock itself. If this job cannot run, the lock ends by itself after 40 minutes.
+  unlock:
+    needs: [check, lock, suite]
+    if: ${{ always() && needs.lock.outputs.acquired == 'true' }}
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - uses: jross24/lab-workflows/actions/lock-release@main
