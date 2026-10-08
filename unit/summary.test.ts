@@ -13,7 +13,7 @@ function input(overrides: Partial<SummaryInput> = {}): SummaryInput {
     commit: '0123456789abcdef0123456789abcdef01234567',
     tests: [passed('page'), passed('api'), passed('consistency')],
     versions: VERSIONS,
-    warmup: { healthTries: 1, pageTries: 3, elapsedMs: 7_400 },
+    warmup: { healthTries: 1, catalogueMs: 2_400, accountMs: 1_900, pageMs: 300, elapsedMs: 2_800 },
     durationMs: 12_300,
     errors: [],
     ...overrides,
@@ -45,8 +45,31 @@ describe('renderSummary', () => {
     assert.match(text, /3 passed, 0 failed, 0 flaky, 0 skipped/);
   });
 
-  it('shows the warm-up, so a cold start is visible', () => {
-    assert.match(renderSummary(input()), /Warm-up.*\/health 1 try.*page 3 tries.*7\.4 s/);
+  it('shows the first calls of the warm-up, so a cold start is visible', () => {
+    const text = renderSummary(input());
+    assert.match(text, /Warm-up, first calls: catalogue API 2\.4 s.*account API 1\.9 s.*page 0\.3 s/);
+    assert.match(text, /slowest 2\.4 s of 5 s/);
+  });
+
+  it('gives no warning when the cold chain is fast', () => {
+    assert.doesNotMatch(renderSummary(input()), /WARNING/);
+  });
+
+  it('shows a warning at the top of a passed run when the cold chain is slow', () => {
+    const slow = { healthTries: 1, catalogueMs: 1_100, accountMs: 4_300, pageMs: 300, elapsedMs: 5_800 };
+    const text = renderSummary(input({ warmup: slow }));
+    assert.match(text, /### E2E against test: passed/);
+    assert.match(text, /^> \[!WARNING\]$/m);
+    assert.match(text, /^> .*account API.*4\.3 s/m);
+    // The warning comes before the result line, so a reader sees it first.
+    assert.ok(text.indexOf('[!WARNING]') < text.indexOf('- Result:'));
+  });
+
+  it('shows the warning in the smoke summary too', () => {
+    const slow = { healthTries: 1, catalogueMs: 4_600, accountMs: 1_000, pageMs: 300, elapsedMs: 5_800 };
+    const text = renderSummary(input({ environment: 'staging', suite: 'smoke', warmup: slow }));
+    assert.match(text, /### E2E against staging \(smoke\): passed/);
+    assert.match(text, /catalogue API.*4\.6 s/);
   });
 
   it('does not call a run passed when no test passed', () => {
