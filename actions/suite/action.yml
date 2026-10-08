@@ -10,6 +10,7 @@ description: Runs the end-to-end suite of lab-e2e as steps of the calling job. I
 # - give the permissions contents: read and id-token: write,
 # - log in to AWS with the role github-deploy of its environment (aws-actions/configure-aws-credentials).
 # The role needs ssm:GetParameter on /lab/*, because the action reads the URL of each application from SSM.
+# For a released service with no public endpoint, it also reads the parameter /lab/<service>/version.
 #
 # A composite action cannot set timeout-minutes on a step. The calling job sets the limit.
 # The suite needs less than 12 minutes. That is the limit of the job "suite" in run.yml.
@@ -26,7 +27,11 @@ inputs:
     required: false
     default: full
   service:
-    description: The service that the release changed. One of web, catalogue, account, core. The release test checks that this service reports the version. Required for smoke.
+    description: >-
+      The service that the release changed. The release test checks that this service reports the version.
+      Required for smoke. web, catalogue, account and core report it in their public answers.
+      Any other name (lower case letters, digits and hyphens, for example flags) is a service with no public endpoint.
+      Its version is the SSM parameter /lab/<service>/version.
     required: false
     default: ''
   version:
@@ -107,10 +112,17 @@ runs:
         elif [[ -z "$SERVICE" && -n "$VERSION" ]] || [[ -n "$SERVICE" && -z "$VERSION" ]]; then
           fail "Set both inputs service and version, or neither."
         fi
+        # web, catalogue, account and core report their version in public answers. Any other name is a service
+        # with no public endpoint. Its name goes into the path of an SSM parameter, so the form is strict.
+        # This pattern is the same as SERVICE_NAME_PATTERN in lib/release.ts.
         if [[ -n "$SERVICE" ]]; then
           case "$SERVICE" in
             web | catalogue | account | core) ;;
-            *) fail "The input service must be web, catalogue, account or core." ;;
+            *)
+              if [[ ! "$SERVICE" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ || ${#SERVICE} -gt 40 ]]; then
+                fail "The input service must be web, catalogue, account, core, or a name of lower case letters, digits and hyphens that starts with a letter."
+              fi
+              ;;
           esac
         fi
         if [[ -n "$VERSION" && ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -156,6 +168,28 @@ runs:
           fi
           echo "${variable}=${value}" >> "$GITHUB_ENV"
         done
+    # A released service with no public endpoint (any service outside web, catalogue, account and core) publishes its
+    # version in the SSM parameter /lab/<service>/version of the environment under test. The tests never call AWS,
+    # so this step reads the parameter and the run step passes it on. The four public services skip this step.
+    - name: read the version of the released service from SSM
+      id: parameter
+      shell: bash
+      env:
+        SERVICE: ${{ inputs.service }}
+      run: |
+        case "$SERVICE" in
+          '' | web | catalogue | account | core) exit 0 ;;
+        esac
+        if ! value="$(aws ssm get-parameter --name "/lab/${SERVICE}/version" --query Parameter.Value --output text)"; then
+          echo "::error::Cannot read the SSM parameter /lab/${SERVICE}/version. Does github-deploy have ssm:GetParameter (lab-platform)? Did ${SERVICE} deploy in this account and write its version?"
+          exit 1
+        fi
+        # The check also keeps a newline out of the output file.
+        if [[ ! "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::The SSM parameter /lab/${SERVICE}/version does not hold a version like 1.2.3."
+          exit 1
+        fi
+        echo "version=${value}" >> "$GITHUB_OUTPUT"
     - name: install the browser
       shell: bash
       working-directory: lab-e2e
@@ -170,6 +204,7 @@ runs:
         E2E_SUITE: ${{ inputs.suite }}
         E2E_EXPECT_SERVICE: ${{ inputs.service }}
         E2E_EXPECT_VERSION: ${{ inputs.version }}
+        E2E_PARAMETER_VERSION: ${{ steps.parameter.outputs.version }}
         E2E_FAULT_DRILL: ${{ inputs.fault-drill }}
       run: |
         if [[ "$E2E_SUITE" == smoke ]]; then

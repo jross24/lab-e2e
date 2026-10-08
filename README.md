@@ -61,7 +61,7 @@ A pipeline that releases one service sets two variables:
 
 | Variable | Meaning |
 | --- | --- |
-| `E2E_EXPECT_SERVICE` | The released service. One of `web`, `catalogue`, `account`, `core`. |
+| `E2E_EXPECT_SERVICE` | The released service. One of `web`, `catalogue`, `account`, `core`, or the name of a service with no public endpoint, for example `flags`. |
 | `E2E_EXPECT_VERSION` | The version of the release, in the form `1.2.3`. |
 
 The test `the released service reports the version of the release` reads the public answers and compares the version.
@@ -73,8 +73,13 @@ It fails with a message that names the service, the expected version and the rep
 | `catalogue` | `version` in `GET /products` of the catalogue API. |
 | `account` | `version` in `GET /profile` of the account API. |
 | `core` | `core.version` in `GET /products` and in `GET /profile`. Both must equal the expected version. |
+| any other name, for example `flags` | The SSM parameter `/lab/<service>/version` in the environment under test. |
 
 Core is private, so the test cannot ask core. The two public APIs report the version of core that they called.
+
+A service with no public endpoint, such as `flags`, publishes its version in the SSM parameter `/lab/<service>/version`.
+The action `actions/suite` reads that parameter with the login of the job and passes it to the test as `E2E_PARAMETER_VERSION`.
+The test compares it with the expected version, and the rest of the suite runs as for any other release.
 
 The test has three cases:
 
@@ -200,6 +205,7 @@ To run the E2E suite, give it the URL of each application:
 | `E2E_ENVIRONMENT`, `E2E_COMMIT` | Optional. The summary uses them. The fault drill uses `E2E_ENVIRONMENT` too. |
 | `E2E_SUITE` | Optional. `full` or `smoke`. The summary and the fault drill use it. The default of the summary is `full`. `npm run smoke` does not set it. |
 | `E2E_EXPECT_SERVICE`, `E2E_EXPECT_VERSION` | Optional. The release test uses them. Set both or none. |
+| `E2E_PARAMETER_VERSION` | Only for a released service with no public endpoint. The value of its SSM parameter `/lab/<service>/version`. The action sets it. |
 | `E2E_FAULT_DRILL` | Optional. The token of the fault drill. Leave it empty for a normal run. |
 
 Each stack publishes its URL as an SSM parameter in its account: `/lab/web/url`, `/lab/catalogue/url` and `/lab/account/url`.
@@ -253,7 +259,7 @@ After a merge, the suite runs against Test. So a change to the tests is itself t
 | --- | --- | --- |
 | `environment` | `test`, `staging`, `production`. The default is `test`. | The environment to test. |
 | `suite` | `full` or `smoke`. The default is `full`. | The suite to run. |
-| `service` | `web`, `catalogue`, `account`, `core`, or empty. | The released service. Only a call (`workflow_call`) has it. |
+| `service` | `web`, `catalogue`, `account`, `core`, a service name such as `flags`, or empty. | The released service. Only a call (`workflow_call`) has it. |
 | `version` | `1.2.3`, or empty. | The version of the release. Only a call has it. |
 
 A manual run (`workflow_dispatch`) has the inputs `environment` and `suite`. A call that sets only `environment` runs the full suite, as before.
@@ -330,7 +336,7 @@ The action does not log in. It reads the three URLs from SSM with that login.
 | --- | --- |
 | `environment` | Required. `test`, `staging` or `production`. The summary and `E2E_ENVIRONMENT` use it. |
 | `suite` | `full` (the default) or `smoke`. |
-| `service`, `version` | The released service and its version. They are optional for `full` and required for `smoke`. The action fails early with a clear message when one is missing or has a bad form. |
+| `service`, `version` | The released service and its version. They are optional for `full` and required for `smoke`. The service is `web`, `catalogue`, `account`, `core`, or a name of lower case letters, digits and hyphens. The action fails early with a clear message when one is missing or has a bad form. |
 | `require-release` | The default is `true`. Set it to `false` to let the smoke suite run with no service and version. Only a manual run of lab-e2e does this. A release keeps the default. |
 | `ref` | The ref of lab-e2e to check out. The default is `main`. |
 | `fault-drill` | The token of the fault drill. It becomes `E2E_FAULT_DRILL`. The default is empty. |
@@ -346,7 +352,7 @@ The steps are:
 1. It checks the inputs.
 2. It checks out `jross24/lab-e2e` at `ref` into the folder `lab-e2e`. The workspace of the caller holds another repository.
 3. It records the commit, sets up Node.js 22 with the npm cache, and runs `npm ci` in that folder.
-4. It reads `/lab/web/url`, `/lab/catalogue/url` and `/lab/account/url` from SSM.
+4. It reads `/lab/web/url`, `/lab/catalogue/url` and `/lab/account/url` from SSM. For a service outside the four, it also reads `/lab/<service>/version`.
 5. It installs Chromium and runs `npx playwright test` (full) or `npx playwright test --grep @smoke` (smoke).
 6. It reads `.e2e/versions.json` into the outputs, unless the run was cancelled.
 7. If a step failed, it uploads `playwright-report/` and `test-results/`.

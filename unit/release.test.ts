@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { findReleaseProblems, readExpectation } from '../lib/release.ts';
+import {
+  findParameterProblems,
+  findReleaseProblems,
+  parameterName,
+  readExpectation,
+  readParameterVersion,
+  usesPublicAnswers,
+} from '../lib/release.ts';
 import type { ReportedVersions } from '../lib/release.ts';
 
 // What the three public answers report. Core has two sources: the catalogue API and the account API.
@@ -50,12 +57,28 @@ describe('readExpectation', () => {
     assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: 'web', E2E_EXPECT_VERSION: '' }), /E2E_EXPECT_VERSION is not set/);
   });
 
-  it('fails on a service name that is not one of the four', () => {
-    assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: 'billing', E2E_EXPECT_VERSION: '0.1.0' }), (error: Error) => {
+  it('fails on a service name that is not one of the four and not a good name', () => {
+    assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: 'Billing', E2E_EXPECT_VERSION: '0.1.0' }), (error: Error) => {
       assert.match(error.message, /E2E_EXPECT_SERVICE must be one of web, catalogue, account, core/);
       return true;
     });
   });
+
+  // A service with no public endpoint has a name of its own. The name goes into the path of an SSM parameter.
+  for (const service of ['flags', 'billing', 'lab-flags', 'flags2', 'a']) {
+    it(`accepts the service ${service}, which is not one of the four`, () => {
+      assert.deepEqual(readExpectation({ E2E_EXPECT_SERVICE: service, E2E_EXPECT_VERSION: '0.1.0' }), {
+        service,
+        version: '0.1.0',
+      });
+    });
+  }
+
+  for (const bad of ['Flags', '1flags', 'flags_x', '-flags', 'flags-', 'fl--ags', '../web', 'a/b', 'flags*', 'flags v', `a${'b'.repeat(40)}`]) {
+    it(`fails on the service name "${bad}"`, () => {
+      assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: bad, E2E_EXPECT_VERSION: '0.1.0' }), /E2E_EXPECT_SERVICE must be one of/);
+    });
+  }
 
   it('is exact about the case of a service name', () => {
     assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: 'Web', E2E_EXPECT_VERSION: '0.1.0' }), /E2E_EXPECT_SERVICE/);
@@ -68,7 +91,7 @@ describe('readExpectation', () => {
   }
 
   it('names both problems in one message', () => {
-    assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: 'nope', E2E_EXPECT_VERSION: '1.2' }), (error: Error) => {
+    assert.throws(() => readExpectation({ E2E_EXPECT_SERVICE: 'Nope', E2E_EXPECT_VERSION: '1.2' }), (error: Error) => {
       assert.match(error.message, /E2E_EXPECT_SERVICE must be/);
       assert.match(error.message, /E2E_EXPECT_VERSION must look like/);
       return true;
@@ -135,5 +158,70 @@ describe('findReleaseProblems', () => {
     assert.equal(problems.length, 2);
     assert.match(problems[0] ?? '', /catalogue API reports core 0\.6\.3/);
     assert.match(problems[1] ?? '', /account API reports core 0\.6\.3/);
+  });
+});
+
+describe('usesPublicAnswers', () => {
+  for (const service of ['web', 'catalogue', 'account', 'core']) {
+    it(`reads the public answers for ${service}`, () => {
+      assert.equal(usesPublicAnswers(service), true);
+    });
+  }
+
+  it('reads the SSM parameter for a service outside the four', () => {
+    assert.equal(usesPublicAnswers('flags'), false);
+  });
+});
+
+describe('findReleaseProblems for a service outside the four', () => {
+  it('throws, so that a public answer is never taken for the version of such a service', () => {
+    assert.throws(() => findReleaseProblems({ service: 'flags', version: '0.1.0' }, REPORTED), /flags/);
+  });
+});
+
+describe('parameterName', () => {
+  it('names the SSM parameter of the service', () => {
+    assert.equal(parameterName('flags'), '/lab/flags/version');
+  });
+});
+
+describe('readParameterVersion', () => {
+  it('returns the value of the variable', () => {
+    assert.equal(readParameterVersion('flags', { E2E_PARAMETER_VERSION: '0.2.0' }), '0.2.0');
+  });
+
+  it('removes spaces around the value', () => {
+    assert.equal(readParameterVersion('flags', { E2E_PARAMETER_VERSION: ' 0.2.0\n' }), '0.2.0');
+  });
+
+  for (const env of [{}, { E2E_PARAMETER_VERSION: '' }, { E2E_PARAMETER_VERSION: '  ' }]) {
+    it(`fails when the variable is not set (${JSON.stringify(env)}), and names the variable and the parameter`, () => {
+      assert.throws(() => readParameterVersion('flags', env), (error: Error) => {
+        assert.match(error.message, /E2E_PARAMETER_VERSION is not set/);
+        assert.match(error.message, /\/lab\/flags\/version/);
+        return true;
+      });
+    });
+  }
+
+  for (const bad of ['2.0', 'v1.2.3', 'latest', '1.2.3-rc1', 'None']) {
+    it(`fails on the value "${bad}" and does not repeat it`, () => {
+      assert.throws(() => readParameterVersion('flags', { E2E_PARAMETER_VERSION: bad }), (error: Error) => {
+        assert.match(error.message, /E2E_PARAMETER_VERSION must look like 1\.2\.3/);
+        assert.equal(error.message.includes(bad), false);
+        return true;
+      });
+    });
+  }
+});
+
+describe('findParameterProblems', () => {
+  it('finds no problem when the parameter holds the version of the release', () => {
+    assert.deepEqual(findParameterProblems({ service: 'flags', version: '0.2.0' }, '0.2.0'), []);
+  });
+
+  it('names the service, the expected version, the parameter and the reported version', () => {
+    const problems = findParameterProblems({ service: 'flags', version: '0.2.0' }, '0.1.0');
+    assert.deepEqual(problems, ['Expected flags 0.2.0, but the SSM parameter /lab/flags/version reports 0.1.0.']);
   });
 });
