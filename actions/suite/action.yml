@@ -1,0 +1,198 @@
+name: e2e suite
+description: Runs the end-to-end suite of lab-e2e as steps of the calling job. It runs the full suite or the smoke subset.
+
+# Why this is an action and not a reusable workflow:
+# A deploy job of a service repository calls it as steps. A second job in the protected production
+# environment would need a second approval from a reviewer. The steps also run inside the serialised
+# deploy job. The README explains this.
+#
+# The calling job must do these things first:
+# - give the permissions contents: read and id-token: write,
+# - log in to AWS with the role github-deploy of its environment (aws-actions/configure-aws-credentials).
+# The role needs ssm:GetParameter on /lab/*, because the action reads the URL of each application from SSM.
+#
+# A composite action cannot set timeout-minutes on a step. The calling job sets the limit.
+# The suite needs less than 12 minutes. That is the limit of the job "suite" in run.yml.
+#
+# The action checks out lab-e2e into the folder lab-e2e. The folder is next to the code of the caller.
+# A pull request that changes this action cannot test the change in a call from another repository,
+# because the caller names the action with @main.
+inputs:
+  environment:
+    description: The environment under test. One of test, staging, production. The summary and the variable E2E_ENVIRONMENT use it.
+    required: true
+  suite:
+    description: The suite to run. full runs every test. smoke runs the tests with the tag @smoke.
+    required: false
+    default: full
+  service:
+    description: The service that the release changed. One of web, catalogue, account, core. The release test checks that this service reports the version. Required for smoke.
+    required: false
+    default: ''
+  version:
+    description: The version of the release, for example 0.3.1. Give it together with service. Required for smoke.
+    required: false
+    default: ''
+  require-release:
+    description: >-
+      Set to false to let the smoke suite run with no service and version. The release test is then skipped.
+      Only a manual run of lab-e2e uses this. A release must keep the default true.
+    required: false
+    default: 'true'
+  ref:
+    description: The ref of lab-e2e to check out.
+    required: false
+    default: main
+  fault-drill:
+    description: The token of the fault drill, for example smoke-staging. It becomes E2E_FAULT_DRILL. Leave it empty for a normal run. The README explains the drill.
+    required: false
+    default: ''
+  report-name:
+    description: >-
+      The name of the artefact with the failure report. The default is
+      playwright-report-SUITE-ENVIRONMENT-attemptN, where N is the attempt of the run.
+      An artefact name must be unique in a run, so a re-run gets a new name.
+    required: false
+    default: ''
+
+outputs:
+  web-version:
+    description: The version of web that the run tested.
+    value: ${{ steps.versions.outputs.web }}
+  catalogue-version:
+    description: The version of catalogue that the run tested.
+    value: ${{ steps.versions.outputs.catalogue }}
+  account-version:
+    description: The version of account that the run tested.
+    value: ${{ steps.versions.outputs.account }}
+  core-version:
+    description: The version of core that the run tested, as the two public APIs report it.
+    value: ${{ steps.versions.outputs.core }}
+  commit:
+    description: The commit of lab-e2e that the run used.
+    value: ${{ steps.commit.outputs.sha }}
+
+runs:
+  using: composite
+  steps:
+    # Fail early, before the checkout and the install. Every input goes in through the environment of the step.
+    - name: check the inputs
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        SUITE: ${{ inputs.suite }}
+        SERVICE: ${{ inputs.service }}
+        VERSION: ${{ inputs.version }}
+        REQUIRE_RELEASE: ${{ inputs.require-release }}
+      run: |
+        problems=0
+        fail() {
+          echo "::error::$1"
+          problems=1
+        }
+        case "$ENVIRONMENT" in
+          test | staging | production) ;;
+          *) fail "The input environment must be test, staging or production." ;;
+        esac
+        case "$SUITE" in
+          full | smoke) ;;
+          *) fail "The input suite must be full or smoke." ;;
+        esac
+        case "$REQUIRE_RELEASE" in
+          true | false) ;;
+          *) fail "The input require-release must be true or false." ;;
+        esac
+        if [[ "$SUITE" == smoke && "$REQUIRE_RELEASE" == true && ( -z "$SERVICE" || -z "$VERSION" ) ]]; then
+          fail "The smoke suite checks the release. Set the inputs service and version."
+        elif [[ -z "$SERVICE" && -n "$VERSION" ]] || [[ -n "$SERVICE" && -z "$VERSION" ]]; then
+          fail "Set both inputs service and version, or neither."
+        fi
+        if [[ -n "$SERVICE" ]]; then
+          case "$SERVICE" in
+            web | catalogue | account | core) ;;
+            *) fail "The input service must be web, catalogue, account or core." ;;
+          esac
+        fi
+        if [[ -n "$VERSION" && ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          fail "The input version must look like 1.2.3."
+        fi
+        exit "$problems"
+
+    # The caller workspace holds another repository. So this step names the repository and a folder.
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: jross24/lab-e2e
+        ref: ${{ inputs.ref }}
+        path: lab-e2e
+        persist-credentials: false
+    - id: commit
+      shell: bash
+      working-directory: lab-e2e
+      run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: lab-e2e/package-lock.json
+    - name: install the packages
+      shell: bash
+      working-directory: lab-e2e
+      run: npm ci
+    # The tests never call AWS. This step is the only AWS call of the run.
+    # The three variables stay in the environment of the calling job after this action.
+    - name: read the URL of each application from SSM
+      shell: bash
+      run: |
+        for pair in web:WEB_URL catalogue:CATALOGUE_URL account:ACCOUNT_URL; do
+          name="${pair%%:*}"
+          variable="${pair##*:}"
+          if ! value="$(aws ssm get-parameter --name "/lab/${name}/url" --query Parameter.Value --output text)"; then
+            echo "::error::Cannot read the SSM parameter /lab/${name}/url. Does github-deploy have ssm:GetParameter (lab-platform)? Is ${name} deployed in this account?"
+            exit 1
+          fi
+          if [[ ! "$value" =~ ^https:// ]]; then
+            echo "::error::The SSM parameter /lab/${name}/url is not an https URL."
+            exit 1
+          fi
+          echo "${variable}=${value}" >> "$GITHUB_ENV"
+        done
+    - name: install the browser
+      shell: bash
+      working-directory: lab-e2e
+      run: npx playwright install --with-deps chromium
+    # The smoke suite runs the tests with the tag @smoke. The full suite runs every test.
+    - name: run the suite
+      shell: bash
+      working-directory: lab-e2e
+      env:
+        E2E_ENVIRONMENT: ${{ inputs.environment }}
+        E2E_COMMIT: ${{ steps.commit.outputs.sha }}
+        E2E_SUITE: ${{ inputs.suite }}
+        E2E_EXPECT_SERVICE: ${{ inputs.service }}
+        E2E_EXPECT_VERSION: ${{ inputs.version }}
+        E2E_FAULT_DRILL: ${{ inputs.fault-drill }}
+      run: |
+        if [[ "$E2E_SUITE" == smoke ]]; then
+          npx playwright test --grep @smoke
+        else
+          npx playwright test
+        fi
+    # The reporter writes the versions that the consistency test observed. A failed comparison still has them
+    # (checked on a laptop). Whether a failed run gives these outputs to the caller is not verified:
+    # the GitHub documentation does not say. The caller handles an empty output.
+    - id: versions
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: |
+        if [[ -f lab-e2e/.e2e/versions.json ]]; then
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' lab-e2e/.e2e/versions.json >> "$GITHUB_OUTPUT"
+        fi
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: ${{ failure() }}
+      with:
+        name: ${{ inputs.report-name || format('playwright-report-{0}-{1}-attempt{2}', inputs.suite, inputs.environment, github.run_attempt) }}
+        path: |
+          lab-e2e/playwright-report/
+          lab-e2e/test-results/
+        retention-days: 7
+        if-no-files-found: ignore

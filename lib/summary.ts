@@ -14,6 +14,8 @@ export interface TestRecord {
 
 export interface SummaryInput {
   readonly environment: string;
+  // Which suite ran. The default is full. The title names the smoke suite, so a reader sees that it ran.
+  readonly suite?: 'full' | 'smoke';
   readonly commit: string;
   readonly tests: readonly TestRecord[];
   readonly versions: Versions | undefined;
@@ -57,6 +59,7 @@ function seconds(ms: number): string {
 export function renderSummary(input: SummaryInput): string {
   const counts = countOutcomes(input.tests);
   // A run where no test passed is not a pass, for example when every test was skipped.
+  // One skipped test, for example the release test with no release to check, does not fail a run.
   const failed = counts.failed > 0 || input.errors.length > 0 || counts.passed + counts.flaky === 0;
   const retried = input.tests.filter((test) => test.attempts > 1);
 
@@ -64,8 +67,12 @@ export function renderSummary(input: SummaryInput): string {
   if (failed) verdict = 'failed';
   else if (counts.flaky > 0) verdict = `passed with ${plural(counts.flaky, 'retry', 'retries')}`;
 
+  // The full suite is the default, so its title has no suffix. The smoke suite adds "(smoke)".
+  const suite = input.suite ?? 'full';
+  const title = suite === 'full' ? input.environment : `${input.environment} (${suite})`;
+
   const lines: string[] = [
-    `### E2E against ${input.environment}: ${verdict}`,
+    `### E2E against ${title}: ${verdict}`,
     '',
     `- Result: ${counts.passed} passed, ${counts.failed} failed, ${counts.flaky} flaky, ${counts.skipped} skipped (${seconds(input.durationMs)}).`,
     `- lab-e2e commit: \`${input.commit}\``,

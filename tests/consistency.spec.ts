@@ -9,7 +9,8 @@ import type { Versions } from '../lib/versions.ts';
 //
 // Core is private, so the test cannot ask core. It reads the version of core from the two answers
 // that passed through core. That also proves that the private call works.
-test('the versions on the page equal the versions that the services report', async ({ page, request }) => {
+// The test is part of the smoke subset.
+test('the versions on the page equal the versions that the services report', { tag: '@smoke' }, async ({ page, request }) => {
   const urls = readUrls();
 
   const [health, catalogue, account] = await Promise.all([

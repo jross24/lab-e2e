@@ -12,7 +12,8 @@
     "typecheck": "tsc",
     "test:unit": "node --test \"unit/*.test.ts\"",
     "list": "playwright test --list",
-    "test": "playwright test"
+    "test": "playwright test",
+    "smoke": "playwright test --grep @smoke"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
