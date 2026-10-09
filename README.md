@@ -61,7 +61,7 @@ The full suite also runs the eight smoke tests, because it runs every test.
 ## The feature flag show-discounts
 
 The catalogue API has a feature flag, `show-discounts`. When the flag is on, `GET /products` adds a number `discount` to each product, and the page shows it in an element with `data-testid="discount"`.
-Today the flag is off in every environment.
+The flag file of lab-flags sets the flag on in Test, Staging and Production.
 
 **The declared state.** Each environment declares the state of the flag: `on` or `off`. The flag file of lab-flags holds it.
 After a release, the stack of lab-flags writes the state to the SSM parameter `/lab/flags/state/show-discounts` in that environment.
@@ -102,7 +102,7 @@ A test that does not apply to the environment skips, and the skip reason is in t
 The tests read `E2E_ENVIRONMENT` to decide this. If it is missing or has another value, the override tests and the ignore test all skip. The suite does not guess.
 All requests only read. The ignore test is safe for Production.
 
-The summary has one line for the flag, for example `show-discounts: declared off; default off: tested; override on: tested.` (Test) or `show-discounts: declared off; default off: tested; override on: not allowed here (override ignored: checked).` (Staging and Production).
+The summary has one line for the flag, for example `show-discounts: declared on; default on: tested; override off: tested.` (Test) or `show-discounts: declared on; default on: tested; override off: not allowed here (override ignored: checked).` (Staging and Production).
 A state that failed shows as `FAILED`. A state that did not run shows as `not tested`.
 
 To run the flag tests on a laptop, set `E2E_FLAG_SHOW_DISCOUNTS` to `on` or `off`. Without it, the tests fail with a message that names the variable.
